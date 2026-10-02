@@ -15,6 +15,9 @@
 | 저장 | SQLite (`~/Library/Application Support/KkachiNogeumgi/`) |
 
 ## 설치 (사용하는 맥에서)
+
+자세한 현장 설치·확인 목록·문제 해결: [docs/INSTALL-GUIDE.md](docs/INSTALL-GUIDE.md)
+
 ```bash
 git clone https://github.com/kimdoyoung1110/kkachi-nogeumgi.git ~/까치녹음기
 ```

@@ -8,7 +8,7 @@ bold() { printf "\n\033[1m%s\033[0m\n" "$1"; }
 ok() { printf "\033[32m  ✓ %s\033[0m\n" "$1"; }
 fail() {
   printf "\n\033[31m  ✗ %s\033[0m\n\n" "$1"
-  read -r -n 1 -p "아무 키나 누르면 창이 닫혀요."
+  read -r -n 1 -p "아무 키나 누르면 창이 닫혀요." || true
   exit 1
 }
 
@@ -66,4 +66,5 @@ cat <<'DONE'
 DONE
 open -R "$APP"
 open "$APP"
-read -r -n 1 -p "아무 키나 누르면 이 창이 닫혀요."
+read -r -n 1 -p "아무 키나 누르면 이 창이 닫혀요." || true
+exit 0
