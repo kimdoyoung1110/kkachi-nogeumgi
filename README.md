@@ -17,8 +17,11 @@
 ## 개발 실행
 ```bash
 uv sync
-uv run uvicorn app.main:app --port 8765 --reload
+uv run uvicorn app.main:app --port 8765 --reload   # 서버 (http://localhost:8765)
+uv run python -m app.cli 녹음.m4a                    # 파일 하나 바로 처리해서 출력
+uv run pytest                                        # 테스트
 ```
+데이터 위치를 바꾸려면 `KKACHI_DATA_DIR=/경로` 환경변수.
 
 ## 폴더
 ```
