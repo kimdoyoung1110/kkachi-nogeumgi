@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+.DS_Store
+# 녹음/DB는 ~/Library/Application Support/KkachiNogeumgi 에 저장되지만 혹시 몰라 막아둠
+data/
+*.m4a
+*.mp3
+*.wav
+*.webm
+!tests/audio/*.wav
+tests/audio/long_*.wav
