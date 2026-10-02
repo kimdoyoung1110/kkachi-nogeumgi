@@ -88,10 +88,23 @@ const isWorking = (r) => r.status === "queued" || r.status === "processing";
 
 /* ---------- 라우팅 ---------- */
 
+function hashParams() {
+  const i = location.hash.indexOf("?");
+  return new URLSearchParams(i >= 0 ? location.hash.slice(i + 1) : "");
+}
+
 function route() {
   const m = location.hash.match(/^#\/r\/([\w-]+)/);
-  if (m) renderDetail(m[1]);
-  else renderHome();
+  const searchInput = $("#search-input");
+  if (location.hash.startsWith("#/search")) {
+    const q = hashParams().get("q") || "";
+    if (document.activeElement !== searchInput) searchInput.value = q;
+    renderSearch(q);
+  } else {
+    if (document.activeElement !== searchInput) searchInput.value = "";
+    if (m) renderDetail(m[1], hashParams());
+    else renderHome();
+  }
 }
 window.addEventListener("hashchange", route);
 
@@ -409,7 +422,7 @@ const spkColor = (i) => `var(--spk-${((i % 8) + 8) % 8})`;
 const speakerName = (idx) => detail.data?.speakers.find((s) => s.idx === idx)?.name ?? `화자 ${idx + 1}`;
 const langBadge = (l) => (l === "mixed" ? "KO·EN" : String(l || "").toUpperCase());
 
-async function renderDetail(id) {
+async function renderDetail(id, params = new URLSearchParams()) {
   clearTimeout(detail.pollTimer);
   Object.assign(detail, { id, data: null, activeUtt: null, activeWord: null, editing: null });
   view.innerHTML = `<a class="back" href="#/">← 내 녹음</a><div class="empty">불러오는 중…</div>`;
@@ -421,7 +434,13 @@ async function renderDetail(id) {
     <a class="back" href="#/">← 내 녹음</a>
     <div class="detail-head">
       <h1 class="editable-title" id="title" title="눌러서 제목 바꾸기">${esc(d.title)}</h1>
-      <div class="rec-meta"><span>${fmtDate(d.created_at)}</span><span>${fmtDuration(d.duration)}</span><span>${LANG_LABEL[d.language]}</span>${d.subject ? `<span>📚 ${esc(d.subject)}</span>` : ""}</div>
+      <div class="detail-meta-row">
+        <div class="rec-meta"><span>${fmtDate(d.created_at)}</span><span>${fmtDuration(d.duration)}</span><span>${LANG_LABEL[d.language]}</span>${d.subject ? `<span>📚 ${esc(d.subject)}</span>` : ""}</div>
+        <div class="detail-actions">
+          <button class="btn btn-sm btn-ghost" id="copy-all">전체 복사</button>
+          <button class="btn btn-sm btn-ghost" id="export-menu">내보내기 ▾</button>
+        </div>
+      </div>
     </div>
     <div class="player-bar">
       <audio id="player" controls preload="metadata" src="/api/recordings/${d.id}/audio"></audio>
@@ -439,6 +458,61 @@ async function renderDetail(id) {
   renderSpeakers();
   renderTranscript();
   bindDetail();
+
+  // 검색 결과에서 들어온 경우: 그 문단으로 스크롤하고 재생 위치를 맞춘다 (자동 재생은 안 함)
+  const uttId = Number(params.get("u"));
+  if (uttId) {
+    const el = view.querySelector(`.utt[data-id="${uttId}"]`);
+    if (el) {
+      el.classList.add("found");
+      setTimeout(() => el.scrollIntoView({ block: "center" }), 50);
+      const t = Number(params.get("t"));
+      const p = $("#player");
+      const setTime = () => { p.currentTime = Math.max(0, t - 0.05); };
+      p.readyState >= 1 ? setTime() : p.addEventListener("loadedmetadata", setTime, { once: true });
+    }
+  }
+}
+
+function downloadExport(format) {
+  const a = document.createElement("a");
+  a.href = `/api/recordings/${detail.id}/export?format=${format}`;
+  a.download = "";
+  document.body.append(a);
+  a.click();
+  a.remove();
+}
+
+function transcriptText() {
+  // 서버의 텍스트 내보내기(app/export.py to_txt)와 같은 모양. 화면에 있는 최신 내용으로 바로 만든다
+  const d = detail.data;
+  const head = [d.title, [fmtDate(d.created_at), fmtDuration(d.duration)].filter(Boolean).join(" · "), ""];
+  const body = d.utterances.map((u) => `[${fmtClock(u.start)}] ${speakerName(u.speaker)}\n${u.text}\n`);
+  return head.concat(body).join("\n").trimEnd() + "\n";
+}
+
+function copyAll() {
+  const text = transcriptText();
+  // 클립보드 쓰기는 '방금 누른' 순간에만 허용되므로 기다리는 일 없이 바로 쓴다
+  const legacyCopy = () => {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.cssText = "position:fixed;opacity:0;top:0;left:0";
+    document.body.append(ta);
+    ta.select();
+    let ok = false;
+    try { ok = document.execCommand("copy"); } catch {}
+    ta.remove();
+    return ok;
+  };
+  const done = (ok) => ok
+    ? toast("전체 내용을 복사했어요. 원하는 곳에 붙여넣으세요.")
+    : toast("복사하지 못했어요. '내보내기 › 텍스트'로 파일을 받아주세요.", "error");
+  // 예전 방식(execCommand)은 누른 순간 바로 실행돼서 가장 확실하다. 안 되면 클립보드 API 로 한 번 더.
+  if (legacyCopy()) return done(true);
+  if (!navigator.clipboard?.writeText) return done(false);
+  navigator.clipboard.writeText(text).then(() => done(true), () => done(false));
 }
 
 function renderSpeakers() {
@@ -749,6 +823,16 @@ view.addEventListener("input", (e) => { if (e.target.id === "edit-text") autosiz
 
 function detailClick(e) {
   if (!detail.data || !location.hash.startsWith("#/r/")) return;
+  if (e.target.closest("#copy-all")) return copyAll();
+  const ex = e.target.closest("#export-menu");
+  if (ex) {
+    e.stopPropagation();
+    return openMenu(ex, [
+      { label: "텍스트 (.txt)", icon: "📄", run: () => downloadExport("txt") },
+      { label: "마크다운 (.md) · 노트 앱용", icon: "📝", run: () => downloadExport("md") },
+      { label: "자막 (.srt) · 영상 플레이어용", icon: "💬", run: () => downloadExport("srt") },
+    ]);
+  }
   const title = e.target.closest("#title");
   if (title) {
     return inlineRename(title, detail.data.title, async (v) => {
@@ -786,6 +870,100 @@ document.addEventListener("keydown", (e) => {
   if (!p) return;
   e.preventDefault();
   p.paused ? p.play() : p.pause();
+});
+
+/* ---------- 검색 ---------- */
+
+let searchSeq = 0;
+
+function markAll(text, q) {
+  // 검색어를 대소문자 무시하고 <mark> 로 감싼다 (HTML 은 먼저 이스케이프)
+  if (!q) return esc(text);
+  const lower = text.toLowerCase(), ql = q.toLowerCase();
+  let out = "", i = 0;
+  for (;;) {
+    const j = lower.indexOf(ql, i);
+    if (j < 0) break;
+    out += esc(text.slice(i, j)) + `<mark>${esc(text.slice(j, j + q.length))}</mark>`;
+    i = j + q.length;
+  }
+  return out + esc(text.slice(i));
+}
+
+function snippet(text, q, radius = 70) {
+  const j = text.toLowerCase().indexOf(q.toLowerCase());
+  if (j < 0 || text.length <= radius * 2 + q.length) return text;
+  const a = Math.max(0, j - radius), b = Math.min(text.length, j + q.length + radius);
+  return (a > 0 ? "… " : "") + text.slice(a, b).trim() + (b < text.length ? " …" : "");
+}
+
+async function renderSearch(q) {
+  const seq = ++searchSeq;
+  if (!q.trim()) {
+    view.innerHTML = `<a class="back" href="#/">← 내 녹음</a><div class="empty"><div class="empty-icon">⌕</div>찾고 싶은 단어를 위 검색창에 입력하세요.</div>`;
+    return;
+  }
+  if (!view.querySelector(".search-results")) view.innerHTML = `<a class="back" href="#/">← 내 녹음</a><div class="empty">찾는 중…</div>`;
+  let r;
+  try { r = await api(`/api/search?q=${encodeURIComponent(q)}`); }
+  catch (err) { if (seq === searchSeq) view.innerHTML = `<div class="empty">${esc(err.message)}</div>`; return; }
+  if (seq !== searchSeq) return;  // 더 최근 검색이 있으면 버린다
+
+  const groups = new Map();
+  for (const h of r.results) {
+    if (!groups.has(h.recording_id)) groups.set(h.recording_id, { title: h.title, created_at: h.created_at, hits: [] });
+    groups.get(h.recording_id).hits.push(h);
+  }
+  view.innerHTML = `
+    <a class="back" href="#/">← 내 녹음</a>
+    <div class="search-results">
+      <h2 class="search-title">‘${esc(r.query)}’ ${r.count ? `${r.count}건${r.count >= 200 ? " 이상" : ""}` : "결과 없음"}</h2>
+      ${r.count ? "" : `<div class="empty">찾는 말이 들어간 문장이 없어요. 띄어쓰기나 철자를 바꿔보세요.</div>`}
+      ${[...groups.entries()].map(([rid, g]) => `
+        <section class="card search-group">
+          <div class="search-group-head">
+            <a class="rec-title" href="#/r/${rid}">${esc(g.title)}</a>
+            <span class="rec-meta"><span>${fmtDate(g.created_at)}</span><span>${g.hits.length}건</span></span>
+          </div>
+          ${g.hits.map((h) => `
+            <a class="hit" href="#/r/${rid}?u=${h.id}&t=${h.start}">
+              <span class="hit-time">${fmtClock(h.start)}</span>
+              <span class="hit-body"><b class="hit-speaker" style="color:${spkColor(h.speaker)}">${esc(h.speaker_name)}</b> ${markAll(snippet(h.text, r.query), r.query)}</span>
+            </a>`).join("")}
+        </section>`).join("")}
+    </div>`;
+}
+
+let searchTimer = null;
+$("#search-input").addEventListener("input", (e) => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => goSearch(e.target.value), 250);
+});
+$("#search-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  clearTimeout(searchTimer);
+  goSearch($("#search-input").value);
+});
+$("#search-input").addEventListener("keydown", (e) => {
+  if (e.key === "Escape") { e.target.value = ""; e.target.blur(); if (location.hash.startsWith("#/search")) location.hash = "#/"; }
+});
+
+function goSearch(q) {
+  const target = `#/search?q=${encodeURIComponent(q.trim())}`;
+  if (!q.trim() && !location.hash.startsWith("#/search")) return;
+  // 글자를 칠 때마다 방문 기록이 쌓이지 않게, 검색 화면 안에서는 주소만 바꾼다
+  if (location.hash.startsWith("#/search")) { history.replaceState(null, "", target); route(); }
+  else location.hash = target;
+}
+
+// ⌘K 또는 / 로 검색창
+document.addEventListener("keydown", (e) => {
+  const typing = e.target.closest("input, textarea, select, [contenteditable]");
+  if ((e.key === "k" && (e.metaKey || e.ctrlKey)) || (e.key === "/" && !typing)) {
+    e.preventDefault();
+    $("#search-input").focus();
+    $("#search-input").select();
+  }
 });
 
 /* ---------- 브라우저 녹음 ---------- */

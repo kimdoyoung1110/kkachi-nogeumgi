@@ -348,3 +348,38 @@ def test_busy_flags_cleared_on_restart(make_client):
     client2, _ = make_client(FakePipeline())
     with client2:
         assert client2.get(f"/api/recordings/{d['id']}").json()["utterances"][0]["busy"] is False
+
+
+# ---- 검색 / 내보내기 ----
+
+def test_search(make_client):
+    client, app = make_client(FakePipeline())
+    with client:
+        d = _done_recording(client, app)
+        client.patch(f"/api/recordings/{d['id']}/speakers/1", json={"name": "학생"})
+        r = client.get("/api/search", params={"q": "테이블"}).json()
+        assert r["count"] == 1 and r["results"][0]["text"] == "해시 테이블입니다."
+        assert r["results"][0]["title"] == "강의 1" and r["results"][0]["speaker_name"] == "화자 1"
+        # 영문 대소문자 무시, 3글자 이상(색인)
+        hit = client.get("/api/search", params={"q": "COLLISION"}).json()["results"][0]
+        assert hit["speaker_name"] == "학생" and hit["start"] == 1.5
+        # 2글자 이하는 LIKE 로 찾음
+        assert client.get("/api/search", params={"q": "해시"}).json()["count"] == 1
+        # 특수문자도 글자로 취급 (오류 없이 0건)
+        for q in ['"', "%", "_", "a OR b", "NEAR(", "*"]:
+            assert client.get("/api/search", params={"q": q}).status_code == 200
+        assert client.get("/api/search", params={"q": "%"}).json()["count"] == 0
+        assert client.get("/api/search", params={"q": "  "}).json()["count"] == 0
+
+
+def test_export_endpoints(make_client):
+    client, app = make_client(FakePipeline())
+    with client:
+        d = _done_recording(client, app)
+        r = client.get(f"/api/recordings/{d['id']}/export", params={"format": "srt"})
+        assert r.status_code == 200 and r.headers["content-type"].startswith("application/x-subrip")
+        assert "filename*=UTF-8''%EA%B0%95%EC%9D%98%201.srt" in r.headers["content-disposition"]
+        assert "화자 1: 해시 테이블입니다." in r.text
+        r = client.get(f"/api/recordings/{d['id']}/export", params={"format": "txt", "download": "false"})
+        assert "content-disposition" not in r.headers and "[00:00] 화자 1" in r.text
+        assert client.get(f"/api/recordings/{d['id']}/export", params={"format": "pdf"}).status_code == 400

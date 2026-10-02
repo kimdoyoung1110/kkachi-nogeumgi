@@ -11,13 +11,14 @@ import shutil
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Callable, Optional
+from urllib.parse import quote
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from app import config, live
+from app import config, export, live
 from app.db import Database
 from app.worker import STAGE_LABELS, Worker
 
@@ -206,6 +207,27 @@ def create_app(
         if not path.exists():
             raise HTTPException(404, "녹음 파일이 없어요.")
         return FileResponse(path)
+
+    # ---- 검색 / 내보내기 ----
+
+    @app.get("/api/search")
+    def search(q: str = "") -> dict:
+        q = q.strip()[:100]
+        hits = db.search(q) if q else []
+        return {"query": q, "count": len(hits), "results": hits}
+
+    @app.get("/api/recordings/{rec_id}/export")
+    def export_file(rec_id: str, format: str = "txt", download: bool = True) -> Response:
+        rec = get_or_404(rec_id)
+        if format not in export.FORMATS:
+            raise HTTPException(400, "txt, md, srt 중에서 골라주세요.")
+        content_type, ext = export.FORMATS[format]
+        body = export.render(format, rec, db.get_transcript(rec_id))
+        headers = {}
+        if download:
+            safe = re.sub(r'[\\/:*?"<>|]+', " ", rec["title"]).strip() or "녹음"
+            headers["Content-Disposition"] = f"attachment; filename*=UTF-8''{quote(safe + ext)}"
+        return Response(body, media_type=content_type, headers=headers)
 
     # ---- 결과 편집 ----
 

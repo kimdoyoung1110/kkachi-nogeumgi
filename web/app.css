@@ -75,7 +75,19 @@ a { color: var(--accent); text-decoration: none; }
 }
 .brand { display: flex; align-items: center; gap: 8px; color: var(--text); font-weight: 700; font-size: 17px; }
 .brand-mark { font-size: 22px; }
-.topbar-actions { display: flex; gap: 8px; }
+.topbar-actions { display: flex; gap: 8px; flex-shrink: 0; }
+.search { position: relative; flex: 1; max-width: 360px; }
+.search input {
+  width: 100%; height: 36px; padding: 0 12px 0 32px;
+  border: 1px solid var(--border); border-radius: 999px; background: var(--surface);
+}
+.search input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.search-icon { position: absolute; left: 11px; top: 50%; transform: translateY(-52%); color: var(--text-3); font-size: 17px; pointer-events: none; }
+@media (max-width: 640px) {
+  .topbar { flex-wrap: wrap; }
+  .search { order: 3; max-width: none; flex-basis: 100%; }
+  .player-bar { top: 109px; }
+}
 
 /* ---------- 버튼 ---------- */
 .btn {
@@ -297,6 +309,25 @@ a { color: var(--accent); text-decoration: none; }
 .menu-icon { width: 18px; display: inline-grid; place-items: center; color: var(--text-3); font-size: 13px; font-weight: 700; }
 .menu-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
 .menu-sep { height: 1px; margin: 5px 4px; background: var(--border); }
+
+.detail-meta-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.detail-actions { display: flex; gap: 6px; }
+.utt.found { animation: found 2.4s ease; }
+@keyframes found { 0%, 40% { background: var(--warn-soft); border-color: var(--warn); } }
+
+/* ---------- 검색 ---------- */
+.search-title { margin: 0 0 14px; font-size: 18px; }
+.search-results { display: grid; gap: 12px; }
+.search-group { padding: 14px 8px 8px; }
+.search-group-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: wrap; padding: 0 10px 8px; }
+.search-group-head .rec-title { color: var(--text); }
+.search-group-head .rec-title:hover { color: var(--accent); }
+.hit { display: grid; grid-template-columns: 52px 1fr; gap: 10px; padding: 9px 10px; border-radius: var(--radius-sm); color: var(--text); }
+.hit:hover { background: var(--surface-2); }
+.hit-time { color: var(--text-3); font-size: 13px; font-variant-numeric: tabular-nums; padding-top: 2px; }
+.hit-body { font-size: 15px; line-height: 1.6; }
+.hit-speaker { font-size: 13px; margin-right: 4px; }
+mark { background: color-mix(in srgb, var(--warn) 28%, transparent); color: inherit; border-radius: 3px; padding: 0 1px; }
 
 /* ---------- 기타 ---------- */
 .drop-overlay {

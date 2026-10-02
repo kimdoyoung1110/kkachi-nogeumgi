@@ -242,6 +242,31 @@ class Database:
             c.execute("INSERT INTO speakers (recording_id, idx, name) VALUES (?,?,?)", (rec_id, idx, name))
         return {"idx": idx, "name": name}
 
+    def search(self, query: str, limit: int = 200) -> list[dict[str, Any]]:
+        """모든 녹음의 문단에서 글자 그대로(부분 일치, 영문 대소문자 무시) 찾는다."""
+        q = query.strip()
+        if not q:
+            return []
+        base = (
+            "SELECT u.id, u.recording_id, u.speaker, u.start, u.text, r.title, r.created_at,"
+            " COALESCE(s.name, '화자 ' || (u.speaker + 1)) AS speaker_name"
+            " FROM utterances u JOIN recordings r ON r.id = u.recording_id"
+            " LEFT JOIN speakers s ON s.recording_id = u.recording_id AND s.idx = u.speaker"
+        )
+        order = " ORDER BY r.created_at DESC, u.idx LIMIT ?"
+        with self.conn() as c:
+            if len(q) >= 3:
+                # trigram 색인은 3글자 이상부터. 따옴표로 감싸 특수문자도 글자로 취급
+                phrase = '"' + q.replace('"', '""') + '"'
+                rows = c.execute(
+                    base + " WHERE u.id IN (SELECT rowid FROM utterances_fts WHERE utterances_fts MATCH ?)" + order,
+                    (phrase, limit),
+                ).fetchall()
+            else:
+                like = "%" + q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+                rows = c.execute(base + " WHERE u.text LIKE ? ESCAPE '\\'" + order, (like, limit)).fetchall()
+        return [dict(r) for r in rows]
+
     def get_transcript(self, rec_id: str) -> dict[str, Any]:
         with self.conn() as c:
             speakers = c.execute(
