@@ -14,6 +14,17 @@
 | 서버 | FastAPI + uvicorn |
 | 저장 | SQLite (`~/Library/Application Support/KkachiNogeumgi/`) |
 
+## 설치 (사용하는 맥에서)
+```bash
+git clone https://github.com/kimdoyoung1110/kkachi-nogeumgi.git ~/까치녹음기
+```
+Finder 에서 `~/까치녹음기/설치.command` 를 두 번 누르면 끝 (uv · 라이브러리 · 모델 약 4GB · 시험 받아쓰기 · `까치녹음기.app` 생성).
+다시 실행하면 최신 버전으로 업데이트된다. 평소 업데이트는 앱 안 ⚙ › 업데이트 확인.
+
+- 앱(Swift 실행기)이 서버를 띄우고 브라우저로 `http://127.0.0.1:8765` 를 연다. 실행 중엔 인터넷에 접속하지 않음(`HF_HUB_OFFLINE=1`).
+- 데이터: `~/Library/Application Support/KkachiNogeumgi/` (녹음, DB, 로그)
+- 실행기 수정 후: `scripts/build_launcher.sh` 로 `assets/kkachi-launcher` 를 다시 만들어 커밋
+
 ## 개발 실행
 ```bash
 uv sync

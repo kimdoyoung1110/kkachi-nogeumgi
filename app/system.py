@@ -71,6 +71,7 @@ def check_update() -> dict[str, Any]:
 def apply_update() -> dict[str, Any]:
     """새 코드 받기 + 라이브러리 맞추기. 성공하면 재시작이 필요하다."""
     log = logging.getLogger(__name__)
+    before = _git("rev-parse", "HEAD").stdout.strip()
     pull = _git("pull", "--ff-only", "--quiet", "origin", BRANCH, timeout=120)
     if pull.returncode != 0:
         log.error("git pull 실패: %s", pull.stderr.strip())
@@ -81,7 +82,24 @@ def apply_update() -> dict[str, Any]:
         if sync.returncode != 0:
             log.error("uv sync 실패: %s", sync.stderr.strip()[-2000:])
             return {"ok": False, "message": "새 버전 준비 중 문제가 생겼어요. 로그를 보내주세요."}
+    _rebuild_app_if_needed(before)
     return {"ok": True, "version": version()}
+
+
+APP_FILES = ("assets/kkachi-launcher", "assets/AppIcon.icns", "scripts/build_app.sh")
+
+
+def _rebuild_app_if_needed(before: str) -> None:
+    """실행기나 아이콘이 바뀐 업데이트면 까치녹음기.app 도 새로 만든다 (다음 실행부터 적용)."""
+    changed = _git("diff", "--name-only", before, "HEAD", "--", *APP_FILES).stdout.strip()
+    app_path_file = Path.home() / "Library/Application Support/KkachiNogeumgi/app_path"
+    if not changed or not app_path_file.exists():
+        return
+    dest = str(Path(app_path_file.read_text().strip()).parent)
+    r = subprocess.run(["bash", str(REPO_DIR / "scripts/build_app.sh"), str(REPO_DIR), dest],
+                       capture_output=True, text=True, timeout=60)
+    if r.returncode != 0:
+        logging.getLogger(__name__).error("앱 다시 만들기 실패: %s", r.stderr.strip())
 
 
 def _find_uv() -> Optional[str]:

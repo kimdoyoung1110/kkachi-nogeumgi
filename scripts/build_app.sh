@@ -11,7 +11,7 @@ APP="$DEST/까치녹음기.app"
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp "$REPO/scripts/launcher.sh" "$APP/Contents/MacOS/kkachi"
+cp "$REPO/assets/kkachi-launcher" "$APP/Contents/MacOS/kkachi"
 chmod +x "$APP/Contents/MacOS/kkachi"
 cp "$REPO/assets/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 printf '%s' "$REPO" > "$APP/Contents/Resources/repo_path"
@@ -36,4 +36,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 PLIST
 
 touch "$APP"  # Finder 가 아이콘을 새로 읽게
+# 업데이트 때 앱을 다시 만들 수 있도록 위치를 적어둔다
+DATA="$HOME/Library/Application Support/KkachiNogeumgi"
+mkdir -p "$DATA" && printf '%s' "$APP" > "$DATA/app_path"
 echo "$APP"
