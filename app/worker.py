@@ -175,12 +175,13 @@ class Worker:
             self.db.save_transcript(rec_id, utterances)
             self.db.update_recording(
                 rec_id, status="done", stage="done", progress=1.0,
-                processing_secs=round(time.time() - started, 1),
+                processing_secs=round(time.time() - started, 1), finished_at=time.time(),
             )
         except Exception as exc:
             log.exception("녹음 처리 실패: %s", rec_id)
             if self.db.get_recording(rec_id) is not None:
-                self.db.update_recording(rec_id, status="failed", stage="failed", error=friendly_error(exc))
+                self.db.update_recording(rec_id, status="failed", stage="failed", error=friendly_error(exc),
+                                         finished_at=time.time())
         finally:
             if caffeinate:
                 caffeinate.terminate()

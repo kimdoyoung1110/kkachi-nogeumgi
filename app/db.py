@@ -29,7 +29,8 @@ CREATE TABLE IF NOT EXISTS recordings (
     stage           TEXT,
     progress        REAL NOT NULL DEFAULT 0,          -- 0~1
     error           TEXT,
-    processing_secs REAL
+    processing_secs REAL,
+    finished_at     REAL                              -- 마지막으로 받아쓰기가 끝난(완료/실패) 시각. 알림용
 );
 
 CREATE TABLE IF NOT EXISTS speakers (
@@ -87,7 +88,7 @@ END;
 
 RECORDING_FIELDS = (
     "id", "title", "created_at", "source", "file_name", "duration", "language", "num_speakers",
-    "subject", "status", "stage", "progress", "error", "processing_secs",
+    "subject", "status", "stage", "progress", "error", "processing_secs", "finished_at",
 )
 
 
@@ -339,6 +340,9 @@ def _migrate(c: sqlite3.Connection) -> None:
     cols = {r["name"] for r in c.execute("PRAGMA table_info(utterances)")}
     if "busy" not in cols:
         c.execute("ALTER TABLE utterances ADD COLUMN busy INTEGER NOT NULL DEFAULT 0")
+    cols = {r["name"] for r in c.execute("PRAGMA table_info(recordings)")}
+    if "finished_at" not in cols:
+        c.execute("ALTER TABLE recordings ADD COLUMN finished_at REAL")
 
 
 def _utterance(row: sqlite3.Row) -> dict[str, Any]:

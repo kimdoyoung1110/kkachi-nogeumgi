@@ -27,7 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     var web: WKWebView!
     var loading: NSTextField!
     var downloads: [WKDownload: URL] = [:]
-    var lastStatus: [String: String] = [:]   // 녹음별 마지막 상태 (받아쓰기 끝남 알림용)
+    var lastFinished: [String: Double]?      // 녹음별 마지막 '받아쓰기 끝난 시각' (알림용). nil = 아직 한 번도 안 봄
     var tick = 0
     var unseen = 0                           // 확인 안 한 '받아쓰기 끝남' 개수 (Dock 배지)
     lazy var nickname: String? = {           // gift.json 의 이름 (알림에서 불러줌)
@@ -333,19 +333,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     func checkFinished() {
         guard let (code, data) = request("GET", "api/recordings"), code == 200,
               let list = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return }
-        let first = lastStatus.isEmpty
+        // 상태가 아니라 '끝난 시각'이 바뀌었는지 본다. 짧은 파일은 확인 간격(6초) 사이에
+        // 올라가서 끝나버려서, 상태 변화로는 알림을 놓쳤다 (실제로 발생).
+        let first = lastFinished == nil
+        var seen: [String: Double] = [:]
         for r in list {
             guard let id = r["id"] as? String, let status = r["status"] as? String else { continue }
-            let before = lastStatus[id]
-            lastStatus[id] = status
-            if first || before == nil || before == status { continue }
+            let finished = r["finished_at"] as? Double ?? 0
+            seen[id] = finished
+            let before = lastFinished?[id] ?? 0
+            if first || finished <= before { continue }
             let title = (r["title"] as? String) ?? "녹음"
-            if status == "done" && (before == "processing" || before == "queued") {
+            if status == "done" {
                 announceDone(id: id, title: title)
-            } else if status == "failed" && before == "processing" {
+            } else if status == "failed" {
                 notify(title: "받아쓰기를 못 했어요", body: "‘\(title)’ — 앱에서 [다시 시도]를 눌러주세요.", hash: "#/")
             }
         }
+        lastFinished = seen
     }
 
     /// 받아쓰기가 끝나면 까치가 관심을 달라고 한다: 알림(항상) + Dock 통통 + 빨간 숫자

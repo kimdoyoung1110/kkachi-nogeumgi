@@ -68,6 +68,7 @@ def test_upload_process_and_fetch(make_client, tmp_path):
 
         d = client.get(f"/api/recordings/{rec['id']}").json()
         assert d["status"] == "done" and d["progress"] == 1.0 and d["stage_label"] == "완료"
+        assert d["finished_at"] > 0
         assert d["duration"] > 20
         assert [u["text"] for u in d["utterances"]] == ["해시 테이블입니다.", "Is that a collision?"]
         assert d["utterances"][0]["words"][0] == ["해시", 0.0, 0.5]
