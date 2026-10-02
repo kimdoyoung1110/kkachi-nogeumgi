@@ -132,6 +132,40 @@ def restart_soon(delay: float = 0.8) -> None:
     threading.Thread(target=_later, daemon=True).start()
 
 
+# ---- 전원 ----
+
+def parse_pmset(out: str) -> dict[str, Any]:
+    """`pmset -g batt` 출력 → {on_ac, percent}. 배터리가 없는 맥(데스크톱)은 percent=None."""
+    import re
+    on_ac = "AC Power" in out
+    m = re.search(r"(\d+)%", out)
+    return {"on_ac": on_ac or m is None, "percent": int(m.group(1)) if m else None}
+
+
+def power_status() -> dict[str, Any]:
+    try:
+        out = subprocess.run(["pmset", "-g", "batt"], capture_output=True, text=True, timeout=5).stdout
+    except Exception:
+        return {"on_ac": True, "percent": None}
+    return parse_pmset(out)
+
+
+# ---- 선물 설정 (저장소 밖 gift.json: 이름·편지) ----
+
+def load_gift(data_dir: Path) -> dict[str, str]:
+    import json
+    try:
+        raw = json.loads((data_dir / "gift.json").read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    out = {}
+    for key, limit in (("name", 20), ("letter", 2000), ("from", 20)):
+        v = raw.get(key)
+        if isinstance(v, str) and v.strip():
+            out[key] = v.strip()[:limit]
+    return out
+
+
 # ---- 문제 신고용 로그 묶음 ----
 
 def _sysctl(name: str) -> str:

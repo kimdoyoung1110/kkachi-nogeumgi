@@ -61,6 +61,15 @@ CREATE TABLE IF NOT EXISTS subjects (
     updated_at   REAL NOT NULL
 );
 
+-- 녹음 중(또는 결과 화면에서) '중요'로 표시한 시점. 받아쓰기를 다시 해도 시간 기준이라 그대로 남는다
+CREATE TABLE IF NOT EXISTS marks (
+    id           INTEGER PRIMARY KEY,
+    recording_id TEXT NOT NULL REFERENCES recordings(id) ON DELETE CASCADE,
+    t            REAL NOT NULL,
+    created_at   REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS marks_rec ON marks(recording_id, t);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS utterances_fts USING fts5(
     text, content='utterances', content_rowid='id', tokenize='trigram'
 );
@@ -293,6 +302,23 @@ class Database:
             for i, r in enumerate(ids):
                 c.execute("UPDATE utterances SET idx = ? WHERE id = ?", (i, r["id"]))
 
+    # ---- 중요 표시 ----
+
+    def add_mark(self, rec_id: str, t: float) -> None:
+        with self.conn() as c:
+            c.execute("INSERT INTO marks (recording_id, t, created_at) VALUES (?,?,?)", (rec_id, t, time.time()))
+
+    def delete_marks(self, rec_id: str, start: float, end: float) -> int:
+        with self.conn() as c:
+            return c.execute(
+                "DELETE FROM marks WHERE recording_id = ? AND t >= ? AND t <= ?", (rec_id, start, end)
+            ).rowcount
+
+    def list_marks(self, rec_id: str) -> list[float]:
+        with self.conn() as c:
+            rows = c.execute("SELECT t FROM marks WHERE recording_id = ? ORDER BY t", (rec_id,)).fetchall()
+        return [r["t"] for r in rows]
+
     def get_transcript(self, rec_id: str) -> dict[str, Any]:
         with self.conn() as c:
             speakers = c.execute(
@@ -304,6 +330,7 @@ class Database:
         return {
             "speakers": [dict(s) for s in speakers],
             "utterances": [_utterance(u) for u in utts],
+            "marks": self.list_marks(rec_id),
         }
 
 

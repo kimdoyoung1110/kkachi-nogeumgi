@@ -88,6 +88,31 @@ function fmtBytes(n) {
 // 까치녹음기 앱 창(WKWebView) 안에서 열렸는지 (브라우저 탭이 아니라)
 const IN_APP = navigator.userAgent.includes("KkachiApp");
 
+// 앱 창(실행기)에 맥 알림을 부탁한다. 브라우저에서 열었으면 아무 일도 안 함
+function nativeNotify(title, body, hash) {
+  try { window.webkit?.messageHandlers?.kkachi?.postMessage({ type: "notify", title, body, hash }); } catch {}
+}
+
+// 선물 설정 (이 맥의 gift.json: 이름·편지). 없으면 빈 객체
+state.gift = {};
+
+function greetingText() {
+  const name = state.gift.name;
+  const n = name ? `, ${name}` : "";
+  const h = new Date().getHours();
+  if (h >= 5 && h < 11) return `좋은 아침이에요${n}! 오늘 수업도 화이팅 ☀️`;
+  if (h >= 11 && h < 17) return `${name ? name + ", " : ""}오늘도 열공 중이네요 📚`;
+  if (h >= 17 && h < 22) return `오늘도 고생 많았어요${n} 🌙`;
+  return `늦게까지 고생이에요${n}. 너무 무리하지 마요 💤`;
+}
+
+function applyGiftBranding() {
+  const name = state.gift.name;
+  const title = name ? `${name}의 까치녹음기` : "까치녹음기";
+  document.title = title;
+  $(".brand-name").textContent = title;
+}
+
 const LANG_LABEL = { null: "한·영 자동", ko: "한국어", en: "영어" };
 const isWorking = (r) => r.status === "queued" || r.status === "processing";
 
@@ -117,6 +142,7 @@ window.addEventListener("hashchange", route);
 
 function renderHome() {
   view.innerHTML = `
+    <p class="greeting" id="greeting">${esc(greetingText())}</p>
     <section id="upload-area"></section>
     <section>
       <div class="section-title"><h2>내 녹음</h2><span class="count" id="rec-count"></span></div>
@@ -325,7 +351,7 @@ function recItemHTML(r) {
   const pct = Math.round((r.progress || 0) * 100);
   const progress = isWorking(r) ? `
     <div class="rec-progress">
-      <div class="rec-progress-top"><span class="stage">${esc(r.stage_label)}${r.status === "processing" ? "…" : ""}</span><span class="pct">${r.status === "processing" ? pct + "%" : ""}</span></div>
+      <div class="rec-progress-top"><span><span class="flap" aria-hidden="true">🐦‍⬛</span> <span class="stage">${esc(r.stage_label)}${r.status === "processing" ? "…" : ""}</span></span><span class="pct">${r.status === "processing" ? pct + "%" : ""}</span></div>
       <div class="bar ${r.status === "queued" ? "indeterminate" : ""}"><div style="width:${pct}%"></div></div>
     </div>` : "";
   const interrupted = r.status === "recording" && r.stalled && r.id !== recorder.id ? `
@@ -398,6 +424,19 @@ function renderCategories() {
     + (none ? chip(CAT_NONE, "분류 없음", none) : "");
 }
 
+// 받아쓰기가 끝나면 까치가 종이를 물어다 주는 작은 연출
+function deliver(r) {
+  const el = $(`#rec-list .rec[data-id="${r.id}"]`);
+  if (!el) return;
+  const bird = document.createElement("span");
+  bird.className = "delivery";
+  bird.textContent = "🐦‍⬛📜";
+  el.append(bird);
+  el.classList.add("delivered");
+  setTimeout(() => { bird.remove(); el.classList.remove("delivered"); }, 2600);
+  toast(`까치가 ‘${r.title}’ 받아쓴 걸 물어왔어요!`);
+}
+
 function renderList() {
   const list = $("#rec-list");
   if (!list) return;
@@ -417,7 +456,10 @@ function renderList() {
   // 진행률 막대가 부드럽게 움직이도록, 상태가 같은 항목은 숫자만 바꾼다
   const existing = new Map([...list.querySelectorAll(".rec")].map((el) => [el.dataset.id, el]));
   const frag = document.createDocumentFragment();
+  const delivered = [];
   for (const r of shown) {
+    const before = state.prevStatus?.[r.id];
+    if (r.status === "done" && (before === "processing" || before === "queued")) delivered.push(r);
     let el = existing.get(r.id);
     const html = recItemHTML(r).trim();
     if (el && el.dataset.status === r.status) {
@@ -445,6 +487,8 @@ function renderList() {
     frag.append(el);
   }
   list.replaceChildren(frag);
+  state.prevStatus = Object.fromEntries(state.recordings.map((r) => [r.id, r.status]));
+  for (const r of delivered) deliver(r);
 }
 
 $("#view").addEventListener("click", async (e) => {
@@ -490,7 +534,7 @@ const langBadge = (l) => (l === "mixed" ? "KO·EN" : String(l || "").toUpperCase
 
 async function renderDetail(id, params = new URLSearchParams()) {
   clearTimeout(detail.pollTimer);
-  Object.assign(detail, { id, data: null, activeUtt: null, activeWord: null, editing: null });
+  Object.assign(detail, { id, data: null, activeUtt: null, activeWord: null, editing: null, onlyStarred: false });
   view.innerHTML = `<a class="back" href="#/">← 내 녹음</a><div class="empty">불러오는 중…</div>`;
   try { detail.data = await api(`/api/recordings/${id}`); }
   catch (err) { view.innerHTML = `<a class="back" href="#/">← 내 녹음</a><div class="empty">${esc(err.message)}</div>`; return; }
@@ -517,6 +561,7 @@ async function renderDetail(id, params = new URLSearchParams()) {
           ${[0.75, 1, 1.25, 1.5, 2].map((v) => `<option value="${v}" ${v === 1 ? "selected" : ""}>${v}배속</option>`).join("")}
         </select>
         <label class="toggle"><input type="checkbox" id="follow" ${detail.follow ? "checked" : ""}><span>재생 따라가기</span></label>
+        <label class="toggle star-toggle" id="star-filter" hidden><input type="checkbox" id="only-starred"><span>⭐ 중요만</span></label>
       </div>
     </div>
     <div class="speakers" id="speakers"></div>
@@ -567,6 +612,7 @@ const AI_PROMPTS = {
 - 맥락상 확실한 내용 위주로 정리
 - 문장 자체를 알아듣기 어려운 부분에만 "(전사 불명확)"을 붙이기
 - 같은 말이 계속 반복되는 구간이나 앞뒤와 상관없는 짧은 영어 문장은 인식 오류일 수 있으니 무시
+- ★로 시작하는 줄은 녹음한 사람이 '중요'라고 표시한 부분이니 빠뜨리지 말고 강조하기
 
 [숫자]
 - 숫자는 전사문에 적힌 그대로 쓰기
@@ -593,11 +639,12 @@ const AI_PROMPTS = {
 - 문장 자체를 알아듣기 어려운 부분에만 "(전사 불명확)"을 붙이기
 - 같은 말이 계속 반복되는 구간이나 앞뒤와 상관없는 짧은 문장은 인식 오류일 수 있으니 무시
 - 화자 이름은 전사문에 적힌 것만 쓰고, 추측으로 이름을 붙이지 않기
+- ★로 시작하는 줄은 녹음한 사람이 '중요'라고 표시한 부분이니 빠뜨리지 말고 강조하기
 
 형식 (노션에 붙여넣기 좋게 마크다운으로):
 1. 강의 주제와 핵심 요약 (3~5줄)
 2. 개념 정리 (소제목별로 정의·예시·공식)
-3. 교수님이 강조했거나 시험에 나온다고 한 내용
+3. 교수님이 강조했거나 시험에 나온다고 한 내용 (★ 표시한 부분 포함)
 4. 질문과 답변
 5. 과제·공지 (마감일 포함)`,
 };
@@ -605,12 +652,14 @@ const AI_PROMPTS = {
 function transcriptForAI(kind) {
   // 같은 화자가 이어서 말한 문단은 한 줄로 합쳐서 짧고 읽기 쉽게 만든다
   const d = detail.data;
+  const stars = starredIds();
   const lines = [];
   let cur = null;
   for (const u of d.utterances) {
-    if (cur && cur.speaker === u.speaker) { cur.text += " " + u.text; continue; }
+    const star = stars.has(u.id);
+    if (cur && cur.speaker === u.speaker) { cur.text += " " + u.text; cur.star ||= star; continue; }
     if (cur) lines.push(cur);
-    cur = { speaker: u.speaker, start: u.start, text: u.text };
+    cur = { speaker: u.speaker, start: u.start, text: u.text, star };
   }
   if (cur) lines.push(cur);
   const names = d.speakers.map((s) => s.name).join(", ");
@@ -626,7 +675,7 @@ function transcriptForAI(kind) {
       : []),
     "",
     "[전사문]",
-    ...lines.map((l) => `${speakerName(l.speaker)} (${fmtClock(l.start)}): ${l.text}`),
+    ...lines.map((l) => `${l.star ? "★ " : ""}${speakerName(l.speaker)} (${fmtClock(l.start)}): ${l.text}`),
   );
   return parts.join("\n") + "\n";
 }
@@ -726,15 +775,56 @@ function wordsHTML(u) {
   return u.words.map((w, i) => `<span class="w" data-i="${i}" data-t="${w[1]}">${esc(w[0])}</span>`).join(" ");
 }
 
-function uttHTML(u) {
+/* 중요 표시(시간) → 그 시간에 말하던 문단 */
+function starredIds() {
+  const utts = detail.data.utterances;
+  const ids = new Set();
+  for (const t of detail.data.marks || []) {
+    let hit = utts[0];
+    for (const u of utts) {
+      if (u.start <= t + 0.3) hit = u; else break;
+    }
+    if (hit) ids.add(hit.id);
+  }
+  return ids;
+}
+
+async function toggleStar(u) {
+  const utts = detail.data.utterances;
+  const i = utts.findIndex((x) => x.id === u.id);
+  try {
+    let r;
+    if (starredIds().has(u.id)) {
+      const end = i + 1 < utts.length ? utts[i + 1].start - 0.31 : u.end + 60;
+      r = await api(`/api/recordings/${detail.id}/marks?start=${u.start - 0.3}&end=${end}`, { method: "DELETE" });
+    } else {
+      r = await api(`/api/recordings/${detail.id}/marks`, jsonOpts("POST", { t: u.start + 0.05 }));
+    }
+    detail.data.marks = r.marks;
+    renderTranscript();
+    updateStarFilter();
+  } catch (err) { toast(err.message, "error"); }
+}
+
+function updateStarFilter() {
+  const n = starredIds().size;
+  const el = $("#star-filter");
+  if (el) {
+    el.hidden = !n && !detail.onlyStarred;
+    el.querySelector("span").textContent = `⭐ 중요만 (${n})`;
+  }
+}
+
+function uttHTML(u, starred = false) {
   const editing = detail.editing === u.id;
   return `
-    <div class="utt ${u.busy ? "busy" : ""} ${detail.activeUtt === u.id ? "active" : ""}" data-id="${u.id}" data-start="${u.start}" data-end="${u.end}">
+    <div class="utt ${u.busy ? "busy" : ""} ${detail.activeUtt === u.id ? "active" : ""} ${starred ? "starred" : ""}" data-id="${u.id}" data-start="${u.start}" data-end="${u.end}">
       <div class="utt-bar" style="background:${spkColor(u.speaker)}"></div>
       <div class="utt-body">
         <div class="utt-head">
           <button class="utt-speaker" data-menu="speaker" style="color:${spkColor(u.speaker)}" title="다른 화자로 바꾸기">${esc(speakerName(u.speaker))} ▾</button>
           <button class="utt-time" data-seek="${u.start}">${fmtClock(u.start)}</button>
+          <button class="utt-star ${starred ? "on" : ""}" data-star title="${starred ? "중요 표시 빼기" : "중요 표시"}">${starred ? "⭐" : "☆"}</button>
           <span class="utt-lang">${langBadge(u.language)}</span>
           <button class="utt-more" data-menu="more" aria-label="문단 메뉴" title="문단 메뉴">⋯</button>
         </div>
@@ -755,9 +845,10 @@ function uttHTML(u) {
 function renderTranscript() {
   const el = $("#transcript");
   if (!el) return;
-  const utts = detail.data.utterances;
+  const stars = starredIds();
+  const utts = detail.onlyStarred ? detail.data.utterances.filter((u) => stars.has(u.id)) : detail.data.utterances;
   el.innerHTML = utts.length
-    ? utts.map(uttHTML).join("")
+    ? utts.map((u) => uttHTML(u, stars.has(u.id))).join("")
     : `<div class="empty">받아쓴 내용이 없어요. 말소리가 없는 녹음일 수 있어요.</div>`;
   if (detail.editing) {
     const ta = $("#edit-text");
@@ -772,7 +863,7 @@ function replaceUtt(u) {
   const el = view.querySelector(`.utt[data-id="${u.id}"]`);
   if (el) {
     const tmp = document.createElement("div");
-    tmp.innerHTML = uttHTML(u).trim();
+    tmp.innerHTML = uttHTML(u, starredIds().has(u.id)).trim();
     el.replaceWith(tmp.firstElementChild);
   }
   renderSpeakers();
@@ -1034,6 +1125,8 @@ function bindDetail() {
   p.addEventListener("timeupdate", onTimeUpdate);
   $("#speed").addEventListener("change", (e) => { p.playbackRate = Number(e.target.value); });
   $("#follow").addEventListener("change", (e) => { detail.follow = e.target.checked; });
+  $("#only-starred").addEventListener("change", (e) => { detail.onlyStarred = e.target.checked; renderTranscript(); });
+  updateStarFilter();
 }
 
 // 화면(view)은 계속 재사용되므로 아래 이벤트는 한 번만 건다
@@ -1086,6 +1179,7 @@ function detailClick(e) {
   const u = detail.data.utterances.find((x) => x.id === Number(uttEl.dataset.id));
   const menu = e.target.closest("[data-menu]");
   if (menu) { e.stopPropagation(); return menu.dataset.menu === "speaker" ? speakerMenu(menu, u) : moreMenu(menu, u); }
+  if (e.target.closest("[data-star]")) return toggleStar(u);
   const act = e.target.closest("[data-act]")?.dataset.act;
   if (act === "save-edit") return saveEdit();
   if (act === "cancel-edit") return cancelEdit();
@@ -1288,6 +1382,7 @@ async function startRecording() {
   Object.assign(recorder, {
     phase: "recording", id: rec.id, title, stream, seq: 0, queue: [], offline: false,
     elapsedMs: 0, resumedAt: Date.now(), paused: false,
+    marks: [], quietSince: null, quietWarned: false, power: null, powerWarned: false,
   });
 
   const media = new MediaRecorder(stream, { mimeType: fmt.mime, audioBitsPerSecond: 64000 });
@@ -1301,7 +1396,50 @@ async function startRecording() {
   if (location.hash.startsWith("#/r/")) location.hash = "#/";
   else renderUploadArea();
   recorder.tick = setInterval(updateRecordingPanel, 250);
+  checkPower();
+  recorder.powerTimer = setInterval(checkPower, 60_000);
   refresh();
+}
+
+/* 중요 표시: 녹음 중 스페이스바나 ⭐ 버튼. 녹음 시간(일시정지 뺀 시간) 기준으로 저장 */
+async function markImportant() {
+  if (recorder.phase !== "recording" || recorder.paused) return;
+  const t = Math.max(0, elapsed() / 1000 - 1);  // 누르는 데 걸린 시간만큼 살짝 앞으로
+  recorder.marks.push(t);
+  const btn = $("#btn-mark");
+  if (btn) {
+    btn.querySelector(".mark-count").textContent = recorder.marks.length;
+    btn.classList.remove("pop");
+    void btn.offsetWidth;  // 애니메이션 다시 시작
+    btn.classList.add("pop");
+  }
+  toast(`⭐ ${fmtClock(t)} 중요 표시했어요`);
+  try { await api(`/api/recordings/${recorder.id}/marks`, jsonOpts("POST", { t })); } catch {}
+}
+
+async function checkPower() {
+  try { recorder.power = await api("/api/app/power"); } catch { return; }
+  const p = recorder.power;
+  if (!p.on_ac && p.percent !== null && p.percent <= 15 && !recorder.powerWarned) {
+    recorder.powerWarned = true;
+    nativeNotify("배터리가 얼마 안 남았어요 🔋", `${p.percent}% 남았어요. 녹음이 멈추지 않게 충전기를 꽂아주세요.`);
+  }
+}
+
+/* 무음 감지: 30초 넘게 소리가 거의 없으면 경고 (창이 숨겨져도 동작하도록 타이머에서 잰다) */
+function sampleQuiet() {
+  if (!recorder.analyser || recorder.paused || recorder.phase !== "recording") { recorder.quietSince = null; return; }
+  const buf = new Float32Array(1024);
+  recorder.analyser.getFloatTimeDomainData(buf);
+  let sum = 0;
+  for (const v of buf) sum += v * v;
+  const db = 20 * Math.log10(Math.sqrt(sum / buf.length) + 1e-8);
+  if (db > -55) { recorder.quietSince = null; recorder.quietWarned = false; return; }
+  recorder.quietSince ??= Date.now();
+  if (Date.now() - recorder.quietSince > 30_000 && !recorder.quietWarned) {
+    recorder.quietWarned = true;
+    nativeNotify("녹음에 소리가 안 들려요 🔇", "30초째 소리가 거의 없어요. 마이크가 가려지거나 꺼지지 않았는지 확인해 주세요.");
+  }
 }
 
 function warnBeforeUnload(e) {
@@ -1397,6 +1535,7 @@ async function stopRecording() {
 
 function cleanupMedia() {
   clearInterval(recorder.tick);
+  clearInterval(recorder.powerTimer);
   cancelAnimationFrame(recorder.raf);
   recorder.stream?.getTracks().forEach((t) => t.stop());
   recorder.audioCtx?.close().catch(() => {});
@@ -1420,6 +1559,10 @@ function renderRecordingPanel(area) {
       </div>
       <div class="rec-timer" id="rec-timer">${fmtClock(elapsed() / 1000)}</div>
       <div class="level" id="level-meter" aria-hidden="true"><div></div></div>
+      <div class="rec-warn" id="rec-warn" hidden></div>
+      <button class="btn btn-star" id="btn-mark" ${stopping ? "disabled" : ""} title="교수님이 중요하다고 할 때 눌러두면 결과에서 ⭐로 찾을 수 있어요">
+        ⭐ 중요! <span class="mark-count">${recorder.marks?.length || 0}</span><small>스페이스바</small>
+      </button>
       <div class="rec-actions">
         <button class="btn btn-ghost btn-lg" id="btn-pause" ${stopping ? "disabled" : ""}>${recorder.paused ? "▶ 계속" : "❚❚ 일시정지"}</button>
         <button class="btn btn-danger btn-lg" id="btn-stop" ${stopping ? "disabled" : ""}>■ 녹음 끝내기</button>
@@ -1431,6 +1574,7 @@ function renderRecordingPanel(area) {
     </section>`;
   $("#btn-pause").addEventListener("click", togglePause);
   $("#btn-stop").addEventListener("click", stopRecording);
+  $("#btn-mark").addEventListener("click", markImportant);
   updateRecordingPanel();
 }
 
@@ -1449,7 +1593,30 @@ function updateRecordingPanel() {
     ? "⚠ 앱과 연결이 끊겨서 다시 시도 중이에요"
     : recorder.seq ? `${fmtClock((recorder.seq - recorder.queue.length) * CHUNK_MS / 1000)}까지 안전하게 저장됨` : "";
   saved.classList.toggle("warn", recorder.offline);
+
+  sampleQuiet();
+  const warns = [];
+  const p = recorder.power;
+  if (p && !p.on_ac && p.percent !== null) {
+    warns.push(`🔌 충전기가 연결돼 있지 않아요 (배터리 ${p.percent}%). 긴 강의는 충전기를 꽂아주세요.`);
+  }
+  if (recorder.quietSince && Date.now() - recorder.quietSince > 30_000) {
+    warns.push("🔇 30초째 소리가 거의 안 들려요. 마이크가 가려지거나 꺼지지 않았는지 확인해 주세요.");
+  }
+  const w = $("#rec-warn");
+  if (w) {
+    w.hidden = !warns.length;
+    w.innerHTML = warns.map((x) => `<div>${esc(x)}</div>`).join("");
+  }
 }
+
+// 녹음 중 스페이스바 = 중요 표시 (글자 입력 중엔 제외)
+document.addEventListener("keydown", (e) => {
+  if (e.code !== "Space" || recorder.phase !== "recording") return;
+  if (e.target.closest("input, textarea, select, [contenteditable]")) return;
+  e.preventDefault();
+  markImportant();
+});
 
 function renderRecordedForm(area) {
   area.innerHTML = `
@@ -1531,6 +1698,7 @@ async function settingsMenu(anchor) {
   openMenu(anchor, [
     { label: "업데이트 확인", icon: "↻", run: checkUpdate },
     { label: "사용법 보기", icon: "?", run: () => showGuide(0) },
+    ...(state.gift.letter ? [{ label: "편지 다시 보기", icon: "💌", run: showLetter }] : []),
     { label: "문제 신고용 로그 저장", icon: "🧾", run: saveLogs },
     "-",
     { label: vLabel, icon: "ⓘ", disabled: true, run: () => {} },
@@ -1605,8 +1773,41 @@ const GUIDE = [
     text: "<b>화자 1</b>을 눌러 '교수님'처럼 이름을 바꿀 수 있어요.<br>틀린 문장은 <b>두 번 눌러</b> 고치고,<br>위 검색창으로 모든 강의에서 찾을 수 있어요." },
 ];
 let guideStep = 0;
+let guidePages = GUIDE;
+
+function letterPage() {
+  const g = state.gift;
+  if (!g.letter) return null;
+  return {
+    icon: "💌", title: g.name ? `${esc(g.name)}에게` : "편지", letter: true,
+    text: esc(g.letter).replace(/\n/g, "<br>") + (g.from ? `<span class="letter-from">— ${esc(g.from)}</span>` : ""),
+  };
+}
+
+function letterKey() {
+  // 편지 내용이 바뀌면 다시 한 번 보여주기 위해 내용으로 키를 만든다
+  let h = 0;
+  for (const ch of state.gift.letter || "") h = (h * 31 + ch.charCodeAt(0)) | 0;
+  return `kkachi.letter.${h}`;
+}
+
+function markLetterSeen() {
+  try { if (state.gift.letter) localStorage.setItem(letterKey(), "seen"); } catch {}
+}
+
+function showLetter() {
+  const page = letterPage();
+  if (!page) return;
+  guidePages = [page];
+  guideStep = 0;
+  renderGuide();
+  const dlg = $("#guide-dialog");
+  if (!dlg.open) dlg.showModal();
+}
 
 function showGuide(step = 0) {
+  const page = letterPage();
+  guidePages = page ? [...GUIDE, page] : GUIDE;
   guideStep = step;
   renderGuide();
   const dlg = $("#guide-dialog");
@@ -1614,25 +1815,37 @@ function showGuide(step = 0) {
 }
 
 function renderGuide() {
-  const g = GUIDE[guideStep];
+  const g = guidePages[guideStep];
+  const dlg = $("#guide-dialog");
+  dlg.classList.toggle("letter-mode", !!g.letter);
   $("#guide-steps").innerHTML = `<div class="guide-icon">${g.icon}</div><h2>${g.title}</h2><p>${g.text}</p>`;
-  $("#guide-dots").innerHTML = GUIDE.map((_, i) => `<span class="${i === guideStep ? "on" : ""}"></span>`).join("");
+  $("#guide-dots").innerHTML = guidePages.length > 1
+    ? guidePages.map((_, i) => `<span class="${i === guideStep ? "on" : ""}"></span>`).join("") : "";
   $("#guide-prev").style.visibility = guideStep ? "visible" : "hidden";
-  $("#guide-next").textContent = guideStep === GUIDE.length - 1 ? "시작하기" : "다음";
+  const last = guideStep === guidePages.length - 1;
+  $("#guide-next").textContent = last ? (g.letter ? "고마워 💛" : "시작하기") : (guidePages[guideStep + 1].letter ? "마지막 한 장 💌" : "다음");
 }
 
 $("#guide-prev").addEventListener("click", () => { guideStep = Math.max(0, guideStep - 1); renderGuide(); });
 $("#guide-next").addEventListener("click", () => {
-  if (guideStep < GUIDE.length - 1) { guideStep++; renderGuide(); return; }
+  if (guideStep < guidePages.length - 1) { guideStep++; renderGuide(); return; }
   $("#guide-dialog").close();
   try { localStorage.setItem("kkachi.guide.v1", "seen"); } catch {}
+  if (guidePages[guideStep].letter) markLetterSeen();
 });
-$("#guide-dialog").addEventListener("cancel", () => { try { localStorage.setItem("kkachi.guide.v1", "seen"); } catch {} });
+$("#guide-dialog").addEventListener("cancel", () => {
+  try { localStorage.setItem("kkachi.guide.v1", "seen"); } catch {}
+  if (guidePages[guideStep]?.letter) markLetterSeen();
+});
 
 function maybeShowGuide() {
-  let seen = false;
-  try { seen = localStorage.getItem("kkachi.guide.v1") === "seen"; } catch {}
+  let seen = false, letterSeen = true;
+  try {
+    seen = localStorage.getItem("kkachi.guide.v1") === "seen";
+    letterSeen = !state.gift.letter || localStorage.getItem(letterKey()) === "seen";
+  } catch {}
   if (!seen) showGuide(0);
+  else if (!letterSeen) showLetter();   // 안내는 봤지만 편지가 새로 생긴 경우
 }
 
 $("#btn-settings").addEventListener("click", (e) => { e.stopPropagation(); settingsMenu(e.currentTarget); });
@@ -1687,8 +1900,12 @@ window.addEventListener("drop", (e) => {
 });
 
 loadSubjects();
-route();
-maybeShowGuide();
+(async () => {
+  try { state.gift = await api("/api/app/gift"); } catch {}
+  applyGiftBranding();
+  route();
+  maybeShowGuide();
+})();
 
 // 이 화면에서 녹음이 되는지 서버 로그에 남긴다 (문제 신고 때 확인용)
 fetch("/api/app/client", {

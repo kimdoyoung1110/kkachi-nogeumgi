@@ -12,10 +12,12 @@
 // 빌드: scripts/build_launcher.sh  →  assets/kkachi-launcher
 
 import AppKit
+import UserNotifications
 import WebKit
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
-    WKUIDelegate, WKNavigationDelegate, WKDownloadDelegate {
+    WKUIDelegate, WKNavigationDelegate, WKDownloadDelegate, WKScriptMessageHandler,
+    UNUserNotificationCenterDelegate {
     let port = ProcessInfo.processInfo.environment["KKACHI_PORT"] ?? "8765"
     lazy var base = URL(string: "http://127.0.0.1:\(port)/")!
     var server: Process?
@@ -25,6 +27,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     var web: WKWebView!
     var loading: NSTextField!
     var downloads: [WKDownload: URL] = [:]
+    var lastStatus: [String: String] = [:]   // 녹음별 마지막 상태 (받아쓰기 끝남 알림용)
+    var tick = 0
 
     lazy var repo: String = {
         let file = Bundle.main.url(forResource: "repo_path", withExtension: nil)
@@ -40,6 +44,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     }()
 
     func applicationDidFinishLaunching(_ note: Notification) {
+        let center = UNUserNotificationCenter.current()
+        center.delegate = self
+        center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
         setupMenu()
         makeWindow()
         if isOurs() {               // 이미 켜져 있음 (예전 실행이 남아 있던 경우)
@@ -99,6 +106,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         config.websiteDataStore = .default()          // 첫 실행 안내·고른 분류 같은 설정 기억
         config.mediaTypesRequiringUserActionForPlayback = []
         config.applicationNameForUserAgent = "KkachiApp/1.0"   // 화면이 앱 창 안인지 알 수 있게
+        config.userContentController.add(self, name: "kkachi") // 화면 → 앱: 알림 보내기
         web = WKWebView(frame: .zero, configuration: config)
         web.uiDelegate = self
         web.navigationDelegate = self
@@ -288,6 +296,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     func startWatching() {
         watch = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
             guard let self else { return }
+            self.tick += 1
+            if self.tick % 2 == 0 { self.checkFinished() }
             if let p = self.server {
                 if !p.isRunning { NSApp.terminate(nil) }
                 return
@@ -295,6 +305,63 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
             self.misses = self.isOurs() ? 0 : self.misses + 1
             if self.misses >= 10 { NSApp.terminate(nil) }  // 우리가 띄운 게 아니면 30초 동안 응답 없을 때
         }
+    }
+
+    // MARK: 알림
+
+    /// 사용자가 창을 보고 있지 않을 때만 알림 (보고 있으면 화면 안 안내로 충분)
+    var userIsLooking: Bool { NSApp.isActive && window.isVisible && window.isKeyWindow }
+
+    func notify(title: String, body: String, hash: String? = nil, force: Bool = false) {
+        if userIsLooking && !force { return }
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.sound = .default
+        if let hash { content.userInfo = ["hash": hash] }
+        UNUserNotificationCenter.current().add(
+            UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
+    }
+
+    func checkFinished() {
+        guard let (code, data) = request("GET", "api/recordings"), code == 200,
+              let list = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return }
+        let first = lastStatus.isEmpty
+        for r in list {
+            guard let id = r["id"] as? String, let status = r["status"] as? String else { continue }
+            let before = lastStatus[id]
+            lastStatus[id] = status
+            if first || before == nil || before == status { continue }
+            let title = (r["title"] as? String) ?? "녹음"
+            if status == "done" && (before == "processing" || before == "queued") {
+                notify(title: "받아쓰기가 끝났어요 🐦‍⬛", body: "‘\(title)’ 를 열어볼까요?", hash: "#/r/\(id)")
+            } else if status == "failed" && before == "processing" {
+                notify(title: "받아쓰기를 못 했어요", body: "‘\(title)’ — 앱에서 [다시 시도]를 눌러주세요.", hash: "#/")
+            }
+        }
+    }
+
+    // 화면에서 보내는 알림 요청 (예: 녹음 중 소리가 안 들릴 때)
+    func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard let body = message.body as? [String: Any], body["type"] as? String == "notify" else { return }
+        notify(title: body["title"] as? String ?? "까치녹음기", body: body["body"] as? String ?? "",
+               hash: body["hash"] as? String)
+    }
+
+    // 알림을 누르면 창을 열고 그 화면으로
+    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
+                                withCompletionHandler done: @escaping () -> Void) {
+        showWindow()
+        if let hash = response.notification.request.content.userInfo["hash"] as? String,
+           hash.range(of: "^#/[A-Za-z0-9/_-]*$", options: .regularExpression) != nil {
+            web.evaluateJavaScript("location.hash = '\(hash)'")
+        }
+        done()
+    }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
+                                withCompletionHandler done: @escaping (UNNotificationPresentationOptions) -> Void) {
+        done([.banner, .sound])
     }
 
     // MARK: HTTP

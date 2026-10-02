@@ -68,3 +68,11 @@ def test_export_logs_has_no_transcripts(tmp_path):
     assert sorted(names) == ["logs/kkachi.log", "기기정보.txt"]
     info = zipfile.ZipFile(path).read("기기정보.txt").decode()
     assert "macOS" in info and "{'done': 3}" in info
+
+
+def test_parse_pmset():
+    assert system.parse_pmset("Now drawing from 'Battery Power'\n -InternalBattery-0 (id=1)\t89%; discharging;") == \
+        {"on_ac": False, "percent": 89}
+    assert system.parse_pmset("Now drawing from 'AC Power'\n -InternalBattery-0 (id=1)\t100%; charged;") == \
+        {"on_ac": True, "percent": 100}
+    assert system.parse_pmset("Now drawing from 'AC Power'\n") == {"on_ac": True, "percent": None}

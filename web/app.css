@@ -366,6 +366,44 @@ mark { background: color-mix(in srgb, var(--warn) 28%, transparent); color: inhe
 .guide-dots span.on { background: var(--accent); width: 18px; border-radius: 4px; }
 .guide .dialog-actions { justify-content: space-between; }
 
+/* ---------- 선물·연출 ---------- */
+.greeting { margin: 0 0 14px; font-size: 15px; color: var(--text-2); font-weight: 600; }
+.flap { display: inline-block; animation: flap .5s ease-in-out infinite alternate; transform-origin: 50% 80%; }
+@keyframes flap { from { transform: translateY(0) rotate(-8deg); } to { transform: translateY(-3px) rotate(8deg) scaleY(.92); } }
+.rec { position: relative; overflow: hidden; }
+.rec.delivered { animation: glow 2.4s ease; }
+@keyframes glow { 0%, 60% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 45%, transparent), var(--shadow); } }
+.delivery { position: absolute; top: 50%; right: -80px; font-size: 26px; transform: translateY(-50%); animation: fly 2.4s ease-in-out forwards; pointer-events: none; }
+@keyframes fly {
+  0% { right: -80px; opacity: 0; } 15% { opacity: 1; }
+  45% { right: 45%; transform: translateY(-80%) rotate(-6deg); }
+  70% { right: 52%; transform: translateY(-50%) rotate(4deg); opacity: 1; }
+  100% { right: 110%; transform: translateY(-120%); opacity: 0; }
+}
+
+/* 중요 표시 */
+.btn-star { min-height: 46px; padding: 0 20px; border-radius: 999px; font-size: 16px; background: var(--warn-soft); color: var(--warn); border: 1.5px solid color-mix(in srgb, var(--warn) 40%, transparent); }
+.btn-star small { font-size: 11.5px; font-weight: 500; opacity: .75; margin-left: 6px; }
+.btn-star .mark-count { display: inline-grid; place-items: center; min-width: 22px; height: 22px; padding: 0 6px; border-radius: 999px; background: var(--warn); color: #fff; font-size: 12.5px; margin-left: 4px; }
+.btn-star.pop { animation: pop .35s ease; }
+@keyframes pop { 40% { transform: scale(1.12); } }
+.rec-warn { width: 100%; padding: 10px 14px; border-radius: var(--radius-sm); background: var(--warn-soft); color: var(--warn); font-size: 13.5px; text-align: left; display: grid; gap: 4px; }
+.utt-star { color: var(--text-3); font-size: 14px; opacity: 0; }
+.utt:hover .utt-star, .utt-star.on, .utt-star:focus-visible { opacity: 1; }
+@media (hover: none) { .utt-star { opacity: 1; } }
+.utt.starred { background: color-mix(in srgb, var(--warn-soft) 70%, transparent); }
+.star-toggle span { font-weight: 600; }
+
+/* 편지 */
+.guide.letter-mode { background: #fffaf0; color: #3b2f1e; }
+.guide.letter-mode h2 { font-family: "AppleMyungjo", "Nanum Myeongjo", serif; }
+.guide.letter-mode p { font-family: "AppleMyungjo", "Nanum Myeongjo", serif; color: #4a3b26; font-size: 16px; line-height: 1.9; text-align: left; }
+.letter-from { display: block; text-align: right; margin-top: 14px; font-weight: 600; }
+@media (prefers-color-scheme: dark) {
+  .guide.letter-mode { background: #2b241a; color: #f3e6cf; }
+  .guide.letter-mode p { color: #e8d9bd; }
+}
+
 /* ---------- 기타 ---------- */
 .drop-overlay {
   position: fixed; inset: 0; z-index: 50; display: grid; place-items: center;

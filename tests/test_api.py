@@ -443,3 +443,40 @@ def test_change_category(make_client):
         assert "팀 회의" in [x["name"] for x in client.get("/api/subjects").json()]
         assert client.patch(f"/api/recordings/{rid}", json={"subject": ""}).json()["subject"] is None
         assert client.patch(f"/api/recordings/{rid}", json={"title": "새 제목"}).json()["subject"] is None
+
+
+# ---- 중요 표시 / 전원 / 선물 ----
+
+def test_marks_survive_redo(make_client):
+    client, app = make_client(FakePipeline())
+    with client:
+        d = _done_recording(client, app)
+        rid = d["id"]
+        assert client.post(f"/api/recordings/{rid}/marks", json={"t": 0.4}).json()["marks"] == [0.4]
+        client.post(f"/api/recordings/{rid}/marks", json={"t": 1.7})
+        assert client.get(f"/api/recordings/{rid}").json()["marks"] == [0.4, 1.7]
+        # 다시 받아써도 시간 기준 표시는 그대로
+        client.post(f"/api/recordings/{rid}/retry")
+        app.state.worker.wait_idle()
+        assert client.get(f"/api/recordings/{rid}").json()["marks"] == [0.4, 1.7]
+        r = client.delete(f"/api/recordings/{rid}/marks", params={"start": 1.5, "end": 2.0}).json()
+        assert r["marks"] == [0.4]
+        assert client.post(f"/api/recordings/{rid}/marks", json={"t": -1}).status_code == 400
+
+
+def test_marks_while_recording(make_client):
+    client, _ = make_client(FakePipeline())
+    with client:
+        rid = client.post("/api/live").json()["id"]
+        assert client.post(f"/api/recordings/{rid}/marks", json={"t": 12.5}).status_code == 201
+
+
+def test_gift_config(make_client, tmp_path):
+    import json
+    client, _ = make_client(FakePipeline())
+    with client:
+        assert client.get("/api/app/gift").json() == {}
+        (tmp_path / "gift.json").write_text(json.dumps({"name": " 지은 ", "letter": "안녕\n사랑해", "from": "도영", "x": 1}))
+        assert client.get("/api/app/gift").json() == {"name": "지은", "letter": "안녕\n사랑해", "from": "도영"}
+        (tmp_path / "gift.json").write_text("{깨진 파일")
+        assert client.get("/api/app/gift").json() == {}

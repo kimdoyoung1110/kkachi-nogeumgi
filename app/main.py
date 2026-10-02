@@ -38,6 +38,10 @@ class SpeakerPatch(BaseModel):
     name: str
 
 
+class MarkRequest(BaseModel):
+    t: float
+
+
 class SpeakerMerge(BaseModel):
     into: int
 
@@ -154,6 +158,14 @@ def create_app(
             info = {}
         log.info("화면 환경: %s", {k: info.get(k) for k in ("inApp", "mediaRecorder", "mime", "getUserMedia", "ua")})
         return {"ok": True}
+
+    @app.get("/api/app/power")
+    def power() -> dict:
+        return system.power_status()
+
+    @app.get("/api/app/gift")
+    def gift() -> dict:
+        return system.load_gift(data_dir)
 
     @app.post("/api/app/quit")
     def quit_app() -> dict:
@@ -383,6 +395,22 @@ def create_app(
             raise HTTPException(409, "이미 다시 받아쓰는 중이에요.")
         worker.enqueue_retranscribe(utt_id, None if body.language == "auto" else body.language)
         return db.get_utterance(utt_id)
+
+    # ---- 중요 표시 ----
+
+    @app.post("/api/recordings/{rec_id}/marks", status_code=201)
+    def add_mark(rec_id: str, body: MarkRequest) -> dict:
+        get_or_404(rec_id)
+        if body.t < 0:
+            raise HTTPException(400, "잘못된 시간이에요.")
+        db.add_mark(rec_id, round(body.t, 2))
+        return {"marks": db.list_marks(rec_id)}
+
+    @app.delete("/api/recordings/{rec_id}/marks")
+    def delete_marks(rec_id: str, start: float, end: float) -> dict:
+        get_or_404(rec_id)
+        db.delete_marks(rec_id, start, end)
+        return {"marks": db.list_marks(rec_id)}
 
     # ---- 브라우저 녹음 ----
 
