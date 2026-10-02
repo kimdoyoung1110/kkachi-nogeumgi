@@ -68,9 +68,12 @@ class Worker:
         self.recordings_dir = recordings_dir
         self._pipeline_factory = pipeline_factory
         self._pipeline = None
-        self._queue: "queue.Queue[Optional[str]]" = queue.Queue()
+        # 작업: ("process", rec_id) 또는 ("retranscribe", utt_id, language). None 은 종료 신호
+        self._queue: "queue.Queue[Optional[tuple]]" = queue.Queue()
         self._thread: Optional[threading.Thread] = None
         self._last_write = 0.0
+        # 같은 녹음의 문단을 연달아 다시 받아쓸 때 매번 디코딩하지 않도록 하나만 들고 있는다
+        self._audio_cache: tuple[Optional[str], object] = (None, None)
 
     @property
     def pipeline(self):
@@ -95,13 +98,18 @@ class Worker:
         for rec_id in self.db.ids_with_status("processing"):
             self.db.update_recording(rec_id, status="failed", stage="failed", error=INTERRUPTED_MESSAGE)
         for rec_id in self.db.ids_with_status("queued"):
-            self._queue.put(rec_id)
+            self._queue.put(("process", rec_id))
+        self.db.clear_busy()
 
     def enqueue(self, rec_id: str) -> None:
         self.db.update_recording(
             rec_id, status="queued", stage="queued", progress=0.0, error=None, processing_secs=None
         )
-        self._queue.put(rec_id)
+        self._queue.put(("process", rec_id))
+
+    def enqueue_retranscribe(self, utt_id: int, language: Optional[str]) -> None:
+        self.db.update_utterance(utt_id, busy=1)
+        self._queue.put(("retranscribe", utt_id, language))
 
     def wait_idle(self, timeout: float = 30.0) -> bool:
         """테스트용: 큐가 빌 때까지 기다린다."""
@@ -116,11 +124,14 @@ class Worker:
 
     def _run(self) -> None:
         while True:
-            rec_id = self._queue.get()
+            task = self._queue.get()
             try:
-                if rec_id is None:
+                if task is None:
                     return
-                self._process(rec_id)
+                if task[0] == "process":
+                    self._process(task[1])
+                elif task[0] == "retranscribe":
+                    self._retranscribe(task[1], task[2])
             finally:
                 self._queue.task_done()
 
@@ -133,8 +144,7 @@ class Worker:
         self.db.update_recording(rec_id, status="processing", stage="decode", progress=0.0, error=None)
         caffeinate = _start_caffeinate()
         try:
-            path = self.recordings_dir / rec_id / rec["file_name"]
-            audio = audio_io.decode(path)
+            audio = self._load_audio(rec)
             self.db.update_recording(rec_id, duration=audio_io.duration(audio))
             self._report(rec_id, "decode", 1, 1, force=True)
 
@@ -160,6 +170,47 @@ class Worker:
         finally:
             if caffeinate:
                 caffeinate.terminate()
+
+    def _load_audio(self, rec: dict):
+        if self._audio_cache[0] == rec["id"]:
+            return self._audio_cache[1]
+        self._audio_cache = (None, None)  # 큰 배열을 두 개 들고 있지 않게 먼저 비운다
+        audio = audio_io.decode(self.recordings_dir / rec["id"] / rec["file_name"])
+        self._audio_cache = (rec["id"], audio)
+        return audio
+
+    def _retranscribe(self, utt_id: int, language: Optional[str]) -> None:
+        """문단 하나를 지정한 언어로 다시 받아쓴다. 실패하면 원래 내용을 그대로 둔다."""
+        from app.merge import SpeakerWord, utterance_language
+        from app.stt import word_language
+
+        utt = self.db.get_utterance(utt_id)
+        if utt is None:
+            return
+        rec = self.db.get_recording(utt["recording_id"])
+        try:
+            audio = self._load_audio(rec)
+            segments = self.pipeline.retranscribe(
+                audio, utt["start"], utt["end"], language,
+                hotwords=rec["hotwords"] or None, replacements=rec["replacements"] or None,
+            )
+            text = " ".join(seg.text for seg in segments).strip()
+            if not text:
+                self.db.update_utterance(utt_id, busy=0)
+                return
+            words = [w for seg in segments for w in seg.words]
+            lang = language or utterance_language([
+                SpeakerWord(w.text, w.start, w.end, utt["speaker"], word_language(w.text, seg.language))
+                for seg in segments for w in seg.words
+            ] or [SpeakerWord(text, 0, 0, 0, segments[0].language)])
+            self.db.update_utterance(
+                utt_id, text=text, language=lang, busy=0,
+                words=[[w.text, round(w.start, 3), round(w.end, 3)] for w in words],
+            )
+        except Exception:
+            log.exception("문단 다시 받아쓰기 실패: %s", utt_id)
+            if self.db.get_utterance(utt_id):
+                self.db.update_utterance(utt_id, busy=0)
 
     def _report(self, rec_id: str, stage: str, done: int, total: int, force: bool = False) -> None:
         # DB 쓰기는 0.5초에 한 번만 (단계가 끝날 때는 항상)

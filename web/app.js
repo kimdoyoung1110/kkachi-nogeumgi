@@ -42,8 +42,16 @@ function confirmDialog(text, okLabel = "삭제") {
   $("#confirm-text").textContent = text;
   $("#confirm-ok").textContent = okLabel;
   dlg.showModal();
+  // 'close' 이벤트는 창이 가려져 있으면 늦게 오거나 안 와서 버튼 클릭을 직접 받는다
   return new Promise((resolve) => {
-    dlg.addEventListener("close", () => resolve(dlg.returnValue === "ok"), { once: true });
+    const finish = (ok) => {
+      $("#confirm-ok").onclick = $("#confirm-cancel").onclick = dlg.oncancel = null;
+      dlg.close();
+      resolve(ok);
+    };
+    $("#confirm-ok").onclick = () => finish(true);
+    $("#confirm-cancel").onclick = () => finish(false);
+    dlg.oncancel = (e) => { e.preventDefault(); finish(false); };  // Esc
   });
 }
 
@@ -385,47 +393,400 @@ $("#view").addEventListener("click", async (e) => {
   }
 });
 
-/* ---------- 결과 화면 (기본 보기, 편집은 다음 단계) ---------- */
+/* ---------- 결과 화면 ---------- */
+
+const detail = {
+  id: null,
+  data: null,
+  activeUtt: null,
+  activeWord: null,
+  follow: true,
+  editing: null,     // 고치는 중인 문단 id
+  pollTimer: null,
+};
+
+const spkColor = (i) => `var(--spk-${((i % 8) + 8) % 8})`;
+const speakerName = (idx) => detail.data?.speakers.find((s) => s.idx === idx)?.name ?? `화자 ${idx + 1}`;
+const langBadge = (l) => (l === "mixed" ? "KO·EN" : String(l || "").toUpperCase());
 
 async function renderDetail(id) {
+  clearTimeout(detail.pollTimer);
+  Object.assign(detail, { id, data: null, activeUtt: null, activeWord: null, editing: null });
   view.innerHTML = `<a class="back" href="#/">← 내 녹음</a><div class="empty">불러오는 중…</div>`;
-  let d;
-  try { d = await api(`/api/recordings/${id}`); }
+  try { detail.data = await api(`/api/recordings/${id}`); }
   catch (err) { view.innerHTML = `<a class="back" href="#/">← 내 녹음</a><div class="empty">${esc(err.message)}</div>`; return; }
+  const d = detail.data;
 
-  const names = Object.fromEntries(d.speakers.map((s) => [s.idx, s.name]));
-  const color = (i) => `var(--spk-${i % 8})`;
   view.innerHTML = `
     <a class="back" href="#/">← 내 녹음</a>
     <div class="detail-head">
-      <h1>${esc(d.title)}</h1>
-      <div class="rec-meta"><span>${fmtDate(d.created_at)}</span><span>${fmtDuration(d.duration)}</span><span>${LANG_LABEL[d.language]}</span></div>
+      <h1 class="editable-title" id="title" title="눌러서 제목 바꾸기">${esc(d.title)}</h1>
+      <div class="rec-meta"><span>${fmtDate(d.created_at)}</span><span>${fmtDuration(d.duration)}</span><span>${LANG_LABEL[d.language]}</span>${d.subject ? `<span>📚 ${esc(d.subject)}</span>` : ""}</div>
     </div>
-    <audio class="player" id="player" controls preload="metadata" src="/api/recordings/${d.id}/audio"></audio>
-    <div class="speakers">${d.speakers.map((s) => `<span class="speaker-tag"><i style="background:${color(s.idx)}"></i>${esc(s.name)}</span>`).join("")}</div>
-    <div class="transcript">
-      ${d.utterances.map((u) => `
-        <div class="utt">
-          <div class="utt-bar" style="background:${color(u.speaker)}"></div>
-          <div>
-            <div class="utt-head">
-              <span class="utt-speaker" style="color:${color(u.speaker)}">${esc(names[u.speaker] ?? `화자 ${u.speaker + 1}`)}</span>
-              <span class="utt-time" data-t="${u.start}">${fmtClock(u.start)}</span>
-              <span class="utt-lang">${u.language === "mixed" ? "KO·EN" : esc(u.language.toUpperCase())}</span>
-            </div>
-            <div class="utt-text">${esc(u.text)}</div>
-          </div>
-        </div>`).join("") || `<div class="empty">받아쓴 내용이 없어요. 말소리가 없는 녹음일 수 있어요.</div>`}
-    </div>`;
+    <div class="player-bar">
+      <audio id="player" controls preload="metadata" src="/api/recordings/${d.id}/audio"></audio>
+      <div class="player-tools">
+        <select class="select select-sm" id="speed" aria-label="재생 속도">
+          ${[0.75, 1, 1.25, 1.5, 2].map((v) => `<option value="${v}" ${v === 1 ? "selected" : ""}>${v}배속</option>`).join("")}
+        </select>
+        <label class="toggle"><input type="checkbox" id="follow" ${detail.follow ? "checked" : ""}><span>재생 따라가기</span></label>
+      </div>
+    </div>
+    <div class="speakers" id="speakers"></div>
+    <p class="hint-line">이름을 누르면 바꿀 수 있어요 · 문장을 두 번 누르면 고칠 수 있어요 · 단어를 누르면 그 부분부터 들려줘요</p>
+    <div class="transcript" id="transcript"></div>`;
 
-  view.querySelector(".transcript").addEventListener("click", (e) => {
-    const t = e.target.closest(".utt-time");
-    if (!t) return;
-    const p = $("#player");
-    p.currentTime = Number(t.dataset.t);
-    p.play();
-  });
+  renderSpeakers();
+  renderTranscript();
+  bindDetail();
 }
+
+function renderSpeakers() {
+  const el = $("#speakers");
+  if (!el) return;
+  const counts = {};
+  for (const u of detail.data.utterances) counts[u.speaker] = (counts[u.speaker] || 0) + (u.end - u.start);
+  el.innerHTML = detail.data.speakers.map((s) => `
+    <button class="speaker-tag" data-rename="${s.idx}" title="눌러서 이름 바꾸기">
+      <i style="background:${spkColor(s.idx)}"></i>${esc(s.name)}
+      <span class="speaker-time">${counts[s.idx] ? fmtDuration(counts[s.idx]) : "0초"}</span>
+    </button>`).join("");
+}
+
+function wordsHTML(u) {
+  if (!u.words.length) return esc(u.text);
+  return u.words.map((w, i) => `<span class="w" data-i="${i}" data-t="${w[1]}">${esc(w[0])}</span>`).join(" ");
+}
+
+function uttHTML(u) {
+  const editing = detail.editing === u.id;
+  return `
+    <div class="utt ${u.busy ? "busy" : ""} ${detail.activeUtt === u.id ? "active" : ""}" data-id="${u.id}" data-start="${u.start}" data-end="${u.end}">
+      <div class="utt-bar" style="background:${spkColor(u.speaker)}"></div>
+      <div class="utt-body">
+        <div class="utt-head">
+          <button class="utt-speaker" data-menu="speaker" style="color:${spkColor(u.speaker)}" title="다른 화자로 바꾸기">${esc(speakerName(u.speaker))} ▾</button>
+          <button class="utt-time" data-seek="${u.start}">${fmtClock(u.start)}</button>
+          <span class="utt-lang">${langBadge(u.language)}</span>
+          <button class="utt-more" data-menu="more" aria-label="문단 메뉴" title="문단 메뉴">⋯</button>
+        </div>
+        ${editing ? `
+          <div class="utt-edit">
+            <textarea class="textarea" id="edit-text">${esc(u.text)}</textarea>
+            <div class="utt-edit-actions">
+              <span class="field-hint">⌘+Enter 저장 · Esc 취소</span>
+              <button class="btn btn-sm btn-ghost" data-act="cancel-edit">취소</button>
+              <button class="btn btn-sm btn-primary" data-act="save-edit">저장</button>
+            </div>
+          </div>` : `
+          <div class="utt-text">${u.busy ? `<span class="busy-label">다시 받아쓰는 중…</span>` : wordsHTML(u)}</div>`}
+      </div>
+    </div>`;
+}
+
+function renderTranscript() {
+  const el = $("#transcript");
+  if (!el) return;
+  const utts = detail.data.utterances;
+  el.innerHTML = utts.length
+    ? utts.map(uttHTML).join("")
+    : `<div class="empty">받아쓴 내용이 없어요. 말소리가 없는 녹음일 수 있어요.</div>`;
+  if (detail.editing) {
+    const ta = $("#edit-text");
+    if (ta) { autosize(ta); ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
+  }
+  scheduleBusyPoll();
+}
+
+function replaceUtt(u) {
+  const i = detail.data.utterances.findIndex((x) => x.id === u.id);
+  if (i >= 0) detail.data.utterances[i] = u;
+  const el = view.querySelector(`.utt[data-id="${u.id}"]`);
+  if (el) {
+    const tmp = document.createElement("div");
+    tmp.innerHTML = uttHTML(u).trim();
+    el.replaceWith(tmp.firstElementChild);
+  }
+  renderSpeakers();
+}
+
+function autosize(ta) {
+  ta.style.height = "auto";
+  ta.style.height = `${ta.scrollHeight + 2}px`;
+}
+
+function scheduleBusyPoll() {
+  clearTimeout(detail.pollTimer);
+  if (!detail.data?.utterances.some((u) => u.busy)) return;
+  detail.pollTimer = setTimeout(async () => {
+    if (!location.hash.includes(detail.id)) return;
+    try {
+      const fresh = await api(`/api/recordings/${detail.id}`);
+      for (const u of fresh.utterances) {
+        const old = detail.data.utterances.find((x) => x.id === u.id);
+        if (old && old.busy && !u.busy) {
+          replaceUtt(u);
+          toast(old.text === u.text ? "다시 받아썼지만 내용이 같아요." : "다시 받아썼어요.");
+        }
+      }
+    } catch {}
+    scheduleBusyPoll();
+  }, 1500);
+}
+
+/* 팝업 메뉴 (화자 바꾸기 / 문단 메뉴) */
+function openMenu(anchor, items) {
+  closeMenu();
+  const menu = document.createElement("div");
+  menu.className = "menu";
+  menu.id = "menu";
+  menu.innerHTML = items.map((it, i) => it === "-"
+    ? `<div class="menu-sep"></div>`
+    : `<button class="menu-item ${it.danger ? "danger" : ""}" data-i="${i}" ${it.disabled ? "disabled" : ""}>${it.icon ? `<span class="menu-icon">${it.icon}</span>` : ""}${esc(it.label)}</button>`).join("");
+  document.body.append(menu);
+  const r = anchor.getBoundingClientRect();
+  const left = Math.min(r.left + window.scrollX, window.scrollX + document.documentElement.clientWidth - menu.offsetWidth - 12);
+  menu.style.left = `${Math.max(12, left)}px`;
+  menu.style.top = `${r.bottom + window.scrollY + 4}px`;
+  menu.addEventListener("click", (e) => {
+    const b = e.target.closest(".menu-item");
+    if (!b) return;
+    closeMenu();
+    items[Number(b.dataset.i)].run();
+  });
+  setTimeout(() => document.addEventListener("click", closeMenuOutside), 0);
+}
+function closeMenuOutside(e) { if (!e.target.closest("#menu")) closeMenu(); }
+function closeMenu() {
+  $("#menu")?.remove();
+  document.removeEventListener("click", closeMenuOutside);
+}
+
+async function patchUtt(id, body) {
+  try { replaceUtt(await api(`/api/utterances/${id}`, jsonOpts("PATCH", body))); return true; }
+  catch (err) { toast(err.message, "error"); return false; }
+}
+
+function jsonOpts(method, body) {
+  return { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
+}
+
+function speakerMenu(anchor, u) {
+  const items = detail.data.speakers.map((s) => ({
+    label: s.name + (s.idx === u.speaker ? "  ✓" : ""),
+    icon: `<i class="menu-dot" style="background:${spkColor(s.idx)}"></i>`,
+    disabled: s.idx === u.speaker,
+    run: () => patchUtt(u.id, { speaker: s.idx }),
+  }));
+  items.push("-", {
+    label: "새 화자로 나누기", icon: "＋",
+    run: async () => {
+      try {
+        const s = await api(`/api/recordings/${detail.id}/speakers`, { method: "POST" });
+        detail.data.speakers.push(s);
+        await patchUtt(u.id, { speaker: s.idx });
+      } catch (err) { toast(err.message, "error"); }
+    },
+  });
+  openMenu(anchor, items);
+}
+
+function moreMenu(anchor, u) {
+  openMenu(anchor, [
+    { label: "글자 고치기", icon: "✎", disabled: u.busy, run: () => startEdit(u.id) },
+    { label: "여기부터 듣기", icon: "▶", run: () => seek(u.start) },
+    "-",
+    { label: "한국어로 다시 받아쓰기", icon: "가", disabled: u.busy, run: () => retranscribe(u, "ko") },
+    { label: "영어로 다시 받아쓰기", icon: "A", disabled: u.busy, run: () => retranscribe(u, "en") },
+    "-",
+    { label: "문단 삭제", icon: "✕", danger: true, run: () => deleteUtt(u) },
+  ]);
+}
+
+async function retranscribe(u, language) {
+  try {
+    replaceUtt(await api(`/api/utterances/${u.id}/retranscribe`, jsonOpts("POST", { language })));
+    scheduleBusyPoll();
+  } catch (err) { toast(err.message, "error"); }
+}
+
+async function deleteUtt(u) {
+  if (!(await confirmDialog("이 문단을 지울까요? 녹음 파일은 그대로 남아요."))) return;
+  try {
+    await api(`/api/utterances/${u.id}`, { method: "DELETE" });
+    detail.data.utterances = detail.data.utterances.filter((x) => x.id !== u.id);
+    view.querySelector(`.utt[data-id="${u.id}"]`)?.remove();
+    renderSpeakers();
+  } catch (err) { toast(err.message, "error"); }
+}
+
+function startEdit(id) {
+  if (detail.editing && detail.editing !== id) cancelEdit();
+  detail.editing = id;
+  replaceUtt(detail.data.utterances.find((x) => x.id === id));
+  const ta = $("#edit-text");
+  if (ta) { autosize(ta); ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
+}
+
+function cancelEdit() {
+  const id = detail.editing;
+  detail.editing = null;
+  if (id) replaceUtt(detail.data.utterances.find((x) => x.id === id));
+}
+
+async function saveEdit() {
+  const id = detail.editing;
+  const ta = $("#edit-text");
+  if (!id || !ta) return;
+  const text = ta.value;
+  detail.editing = null;
+  if (!(await patchUtt(id, { text }))) { detail.editing = id; replaceUtt(detail.data.utterances.find((x) => x.id === id)); }
+}
+
+function inlineRename(el, current, save) {
+  const input = document.createElement("input");
+  input.className = "input inline-input";
+  input.value = current;
+  input.maxLength = el.id === "title" ? 120 : 40;
+  el.replaceWith(input);
+  input.focus();
+  input.select();
+  let done = false;
+  const finish = async (commit) => {
+    if (done) return;
+    done = true;
+    const value = input.value.trim();
+    if (commit && value && value !== current) {
+      try { await save(value); } catch (err) { toast(err.message, "error"); }
+    }
+    renderDetailHeaderAndSpeakers(input);
+  };
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.isComposing) finish(true);
+    if (e.key === "Escape") finish(false);
+  });
+  input.addEventListener("blur", () => finish(true));
+}
+
+function renderDetailHeaderAndSpeakers(input) {
+  if (input.parentElement?.classList.contains("detail-head")) {
+    const h = document.createElement("h1");
+    h.className = "editable-title";
+    h.id = "title";
+    h.title = "눌러서 제목 바꾸기";
+    h.textContent = detail.data.title;
+    input.replaceWith(h);
+  } else {
+    input.remove();
+    renderSpeakers();
+  }
+  // 화자 이름이 바뀌었을 수 있으니 문단 머리도 다시 그린다
+  renderTranscript();
+}
+
+function seek(t) {
+  const p = $("#player");
+  if (!p) return;
+  p.currentTime = Math.max(0, t - 0.05);
+  p.play().catch(() => {});
+}
+
+function onTimeUpdate() {
+  const p = $("#player");
+  const t = p.currentTime;
+  const utts = detail.data.utterances;
+  // 현재 시간이 들어있는 문단 (없으면 직전 문단)
+  let cur = null;
+  for (const u of utts) {
+    if (u.start <= t + 0.05) cur = u;
+    else break;
+  }
+  if (cur && t > cur.end + 1.5) cur = null;
+
+  if ((cur?.id ?? null) !== detail.activeUtt) {
+    view.querySelector(".utt.active")?.classList.remove("active");
+    detail.activeUtt = cur?.id ?? null;
+    if (cur) {
+      const el = view.querySelector(`.utt[data-id="${cur.id}"]`);
+      el?.classList.add("active");
+      if (detail.follow && !p.paused && el && !detail.editing) el.scrollIntoView({ block: "center", behavior: "smooth" });
+    }
+  }
+
+  // 단어 강조
+  view.querySelector(".w.on")?.classList.remove("on");
+  if (cur && cur.words.length) {
+    let wi = -1;
+    for (let i = 0; i < cur.words.length; i++) {
+      if (cur.words[i][1] <= t) wi = i; else break;
+    }
+    if (wi >= 0) view.querySelector(`.utt[data-id="${cur.id}"] .w[data-i="${wi}"]`)?.classList.add("on");
+  }
+}
+
+function bindDetail() {
+  const p = $("#player");
+  p.addEventListener("timeupdate", onTimeUpdate);
+  $("#speed").addEventListener("change", (e) => { p.playbackRate = Number(e.target.value); });
+  $("#follow").addEventListener("change", (e) => { detail.follow = e.target.checked; });
+}
+
+// 화면(view)은 계속 재사용되므로 아래 이벤트는 한 번만 건다
+view.addEventListener("click", detailClick);
+view.addEventListener("dblclick", (e) => {
+    if (!location.hash.startsWith("#/r/") || !detail.data) return;
+    const t = e.target.closest(".utt-text");
+    if (!t) return;
+    const u = detail.data.utterances.find((x) => x.id === Number(t.closest(".utt").dataset.id));
+    if (u && !u.busy) startEdit(u.id);
+});
+view.addEventListener("keydown", (e) => {
+  if (e.target.id !== "edit-text") return;
+  if (e.key === "Escape") cancelEdit();
+  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) saveEdit();
+});
+view.addEventListener("input", (e) => { if (e.target.id === "edit-text") autosize(e.target); });
+
+function detailClick(e) {
+  if (!detail.data || !location.hash.startsWith("#/r/")) return;
+  const title = e.target.closest("#title");
+  if (title) {
+    return inlineRename(title, detail.data.title, async (v) => {
+      const r = await api(`/api/recordings/${detail.id}`, jsonOpts("PATCH", { title: v }));
+      detail.data.title = r.title;
+    });
+  }
+  const rn = e.target.closest("[data-rename]");
+  if (rn) {
+    const idx = Number(rn.dataset.rename);
+    return inlineRename(rn, speakerName(idx), async (v) => {
+      const r = await api(`/api/recordings/${detail.id}/speakers/${idx}`, jsonOpts("PATCH", { name: v }));
+      detail.data.speakers.find((s) => s.idx === idx).name = r.name;
+    });
+  }
+  const uttEl = e.target.closest(".utt");
+  if (!uttEl) return;
+  const u = detail.data.utterances.find((x) => x.id === Number(uttEl.dataset.id));
+  const menu = e.target.closest("[data-menu]");
+  if (menu) { e.stopPropagation(); return menu.dataset.menu === "speaker" ? speakerMenu(menu, u) : moreMenu(menu, u); }
+  const act = e.target.closest("[data-act]")?.dataset.act;
+  if (act === "save-edit") return saveEdit();
+  if (act === "cancel-edit") return cancelEdit();
+  const sk = e.target.closest("[data-seek]");
+  if (sk) return seek(Number(sk.dataset.seek));
+  const w = e.target.closest(".w");
+  if (w && !window.getSelection().toString()) return seek(Number(w.dataset.t));
+}
+
+// 결과 화면에서 스페이스바로 재생/멈춤 (글자 입력 중엔 제외)
+document.addEventListener("keydown", (e) => {
+  if (e.code !== "Space" || !location.hash.startsWith("#/r/")) return;
+  if (e.target.closest("input, textarea, select, button, [contenteditable]")) return;
+  const p = $("#player");
+  if (!p) return;
+  e.preventDefault();
+  p.paused ? p.play() : p.pause();
+});
 
 /* ---------- 브라우저 녹음 ---------- */
 

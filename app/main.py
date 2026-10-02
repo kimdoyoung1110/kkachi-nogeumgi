@@ -15,6 +15,7 @@ from typing import Callable, Optional
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 from app import config, live
 from app.db import Database
@@ -24,6 +25,23 @@ log = logging.getLogger(__name__)
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 UPLOAD_CHUNK = 1024 * 1024
+
+
+class RecordingPatch(BaseModel):
+    title: str
+
+
+class SpeakerPatch(BaseModel):
+    name: str
+
+
+class UtterancePatch(BaseModel):
+    text: Optional[str] = None
+    speaker: Optional[int] = None
+
+
+class RetranscribeRequest(BaseModel):
+    language: str = "auto"  # auto / ko / en
 
 
 class WebFiles(StaticFiles):
@@ -188,6 +206,74 @@ def create_app(
         if not path.exists():
             raise HTTPException(404, "녹음 파일이 없어요.")
         return FileResponse(path)
+
+    # ---- 결과 편집 ----
+
+    def utterance_or_404(utt_id: int) -> dict:
+        utt = db.get_utterance(utt_id)
+        if utt is None:
+            raise HTTPException(404, "문단을 찾을 수 없어요.")
+        return utt
+
+    @app.patch("/api/recordings/{rec_id}")
+    def rename_recording(rec_id: str, body: RecordingPatch) -> dict:
+        get_or_404(rec_id)
+        title = body.title.strip()
+        if not title:
+            raise HTTPException(400, "제목을 입력해 주세요.")
+        db.update_recording(rec_id, title=title[:120])
+        return with_label(db.get_recording(rec_id))
+
+    @app.patch("/api/recordings/{rec_id}/speakers/{idx}")
+    def rename_speaker(rec_id: str, idx: int, body: SpeakerPatch) -> dict:
+        get_or_404(rec_id)
+        name = body.name.strip()
+        if not name:
+            raise HTTPException(400, "이름을 입력해 주세요.")
+        db.rename_speaker(rec_id, idx, name[:40])
+        return {"idx": idx, "name": name[:40]}
+
+    @app.post("/api/recordings/{rec_id}/speakers", status_code=201)
+    def add_speaker(rec_id: str) -> dict:
+        get_or_404(rec_id)
+        return db.add_speaker(rec_id)
+
+    @app.patch("/api/utterances/{utt_id}")
+    def edit_utterance(utt_id: int, body: UtterancePatch) -> dict:
+        utt = utterance_or_404(utt_id)
+        if utt["busy"]:
+            raise HTTPException(409, "다시 받아쓰는 중이에요. 끝난 뒤에 고쳐주세요.")
+        fields: dict = {}
+        if body.text is not None:
+            text = body.text.strip()
+            if not text:
+                raise HTTPException(400, "내용이 비어 있어요. 지우려면 '문단 삭제'를 눌러주세요.")
+            if text != utt["text"]:
+                # 직접 고친 문단은 단어별 시간이 더 이상 맞지 않으므로 비운다 (문단 시간은 유지)
+                fields.update(text=text, words=[])
+        if body.speaker is not None:
+            known = {s["idx"] for s in db.get_transcript(utt["recording_id"])["speakers"]}
+            if body.speaker not in known:
+                raise HTTPException(400, "없는 화자예요.")
+            fields["speaker"] = body.speaker
+        if fields:
+            db.update_utterance(utt_id, **fields)
+        return db.get_utterance(utt_id)
+
+    @app.delete("/api/utterances/{utt_id}", status_code=204)
+    def delete_utterance(utt_id: int) -> None:
+        utterance_or_404(utt_id)
+        db.delete_utterance(utt_id)
+
+    @app.post("/api/utterances/{utt_id}/retranscribe", status_code=202)
+    def retranscribe(utt_id: int, body: RetranscribeRequest) -> dict:
+        utt = utterance_or_404(utt_id)
+        if body.language not in ("auto", "ko", "en"):
+            raise HTTPException(400, "언어는 자동/한국어/영어 중에서 골라주세요.")
+        if utt["busy"]:
+            raise HTTPException(409, "이미 다시 받아쓰는 중이에요.")
+        worker.enqueue_retranscribe(utt_id, None if body.language == "auto" else body.language)
+        return db.get_utterance(utt_id)
 
     # ---- 브라우저 녹음 ----
 

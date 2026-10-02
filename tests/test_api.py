@@ -14,6 +14,16 @@ class FakePipeline:
         self.fail = fail
         self.gate = gate
         self.calls = []
+        self.retranscribe_calls = []
+
+    def retranscribe(self, audio, start, end, language, hotwords=None, replacements=None):
+        from app.stt import Segment, Word
+        self.retranscribe_calls.append(dict(start=start, end=end, language=language))
+        if self.fail:
+            raise RuntimeError("boom")
+        return [Segment(start, end, language or "en", "Is that a collision?",
+                        [Word("Is", start, start + 0.1), Word("that", start + 0.1, start + 0.2),
+                         Word("a", start + 0.2, start + 0.3), Word("collision?", start + 0.3, end)])]
 
     def process(self, audio, language=None, hotwords=None, num_speakers=None, replacements=None, progress=None):
         self.calls.append(dict(language=language, hotwords=hotwords, num_speakers=num_speakers,
@@ -252,3 +262,89 @@ def test_recording_status_survives_restart(make_client):
     with client2:
         # 녹음 중이던 건 실패로 바꾸지 않는다 (저장된 부분을 나중에 받아쓸 수 있게)
         assert client2.get(f"/api/recordings/{rid}/status").json()["status"] == "recording"
+
+
+# ---- 결과 편집 ----
+
+def _done_recording(client, app):
+    rec = upload(client).json()
+    app.state.worker.wait_idle()
+    return client.get(f"/api/recordings/{rec['id']}").json()
+
+
+def test_rename_recording_and_speaker(make_client):
+    client, app = make_client(FakePipeline())
+    with client:
+        d = _done_recording(client, app)
+        rid = d["id"]
+        assert client.patch(f"/api/recordings/{rid}", json={"title": "  새 제목 "}).json()["title"] == "새 제목"
+        assert client.patch(f"/api/recordings/{rid}", json={"title": " "}).status_code == 400
+        assert client.patch(f"/api/recordings/{rid}/speakers/0", json={"name": "교수님"}).status_code == 200
+        new = client.post(f"/api/recordings/{rid}/speakers").json()
+        assert new == {"idx": 2, "name": "화자 3"}
+        speakers = client.get(f"/api/recordings/{rid}").json()["speakers"]
+        assert [s["name"] for s in speakers] == ["교수님", "화자 2", "화자 3"]
+
+
+def test_edit_utterance_text_and_speaker(make_client):
+    client, app = make_client(FakePipeline())
+    with client:
+        d = _done_recording(client, app)
+        u = d["utterances"][0]
+        r = client.patch(f"/api/utterances/{u['id']}", json={"text": "해시 테이블이에요."}).json()
+        assert r["text"] == "해시 테이블이에요." and r["words"] == [] and r["start"] == u["start"]
+        assert client.patch(f"/api/utterances/{u['id']}", json={"speaker": 1}).json()["speaker"] == 1
+        assert client.patch(f"/api/utterances/{u['id']}", json={"speaker": 7}).status_code == 400
+        assert client.patch(f"/api/utterances/{u['id']}", json={"text": "  "}).status_code == 400
+        # 고친 내용이 검색에도 반영된다
+        with app.state.db.conn() as c:
+            hits = c.execute("SELECT text FROM utterances_fts WHERE utterances_fts MATCH '테이블이에요'").fetchall()
+        assert len(hits) == 1
+
+
+def test_delete_utterance(make_client):
+    client, app = make_client(FakePipeline())
+    with client:
+        d = _done_recording(client, app)
+        assert client.delete(f"/api/utterances/{d['utterances'][0]['id']}").status_code == 204
+        assert len(client.get(f"/api/recordings/{d['id']}").json()["utterances"]) == 1
+        assert client.delete("/api/utterances/99999").status_code == 404
+
+
+def test_retranscribe_utterance(make_client):
+    pipe = FakePipeline()
+    client, app = make_client(pipe)
+    with client:
+        d = _done_recording(client, app)
+        u = d["utterances"][0]
+        r = client.post(f"/api/utterances/{u['id']}/retranscribe", json={"language": "en"})
+        assert r.status_code == 202
+        app.state.worker.wait_idle()
+        after = client.get(f"/api/recordings/{d['id']}").json()["utterances"][0]
+        assert after["text"] == "Is that a collision?" and after["language"] == "en" and not after["busy"]
+        assert len(after["words"]) == 4 and after["speaker"] == u["speaker"]
+        assert pipe.retranscribe_calls[-1] == dict(start=u["start"], end=u["end"], language="en")
+        assert client.post(f"/api/utterances/{u['id']}/retranscribe", json={"language": "fr"}).status_code == 400
+
+
+def test_retranscribe_failure_keeps_text(make_client):
+    pipe = FakePipeline()
+    client, app = make_client(pipe)
+    with client:
+        d = _done_recording(client, app)
+        u = d["utterances"][0]
+        pipe.fail = True
+        client.post(f"/api/utterances/{u['id']}/retranscribe", json={"language": "ko"})
+        app.state.worker.wait_idle()
+        after = client.get(f"/api/recordings/{d['id']}").json()["utterances"][0]
+        assert after["text"] == u["text"] and not after["busy"]
+
+
+def test_busy_flags_cleared_on_restart(make_client):
+    client, app = make_client(FakePipeline())
+    with client:
+        d = _done_recording(client, app)
+    app.state.db.update_utterance(d["utterances"][0]["id"], busy=1)
+    client2, _ = make_client(FakePipeline())
+    with client2:
+        assert client2.get(f"/api/recordings/{d['id']}").json()["utterances"][0]["busy"] is False

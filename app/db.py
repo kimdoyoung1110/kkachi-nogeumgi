@@ -48,7 +48,8 @@ CREATE TABLE IF NOT EXISTS utterances (
     end          REAL NOT NULL,
     language     TEXT NOT NULL,
     text         TEXT NOT NULL,
-    words        TEXT NOT NULL DEFAULT '[]'           -- JSON [[text, start, end], ...]
+    words        TEXT NOT NULL DEFAULT '[]',          -- JSON [[text, start, end], ...] (직접 고치면 비움)
+    busy         INTEGER NOT NULL DEFAULT 0           -- 1 = 다시 받아쓰는 중
 );
 CREATE INDEX IF NOT EXISTS utterances_rec ON utterances(recording_id, idx);
 
@@ -87,6 +88,7 @@ class Database:
         path.parent.mkdir(parents=True, exist_ok=True)
         with self.conn() as c:
             c.executescript(SCHEMA)
+            _migrate(c)
 
     @contextmanager
     def conn(self) -> Iterator[sqlite3.Connection]:
@@ -202,19 +204,70 @@ class Database:
                     (rec_id, spk, f"화자 {spk + 1}"),
                 )
 
+    def get_utterance(self, utt_id: int) -> Optional[dict[str, Any]]:
+        with self.conn() as c:
+            row = c.execute("SELECT * FROM utterances WHERE id = ?", (utt_id,)).fetchone()
+        return _utterance(row) if row else None
+
+    def update_utterance(self, utt_id: int, **fields: Any) -> None:
+        if "words" in fields:
+            fields["words"] = json.dumps(fields["words"], ensure_ascii=False)
+        cols = ", ".join(f"{k} = ?" for k in fields)
+        with self.conn() as c:
+            c.execute(f"UPDATE utterances SET {cols} WHERE id = ?", (*fields.values(), utt_id))
+
+    def delete_utterance(self, utt_id: int) -> None:
+        with self.conn() as c:
+            c.execute("DELETE FROM utterances WHERE id = ?", (utt_id,))
+
+    def clear_busy(self) -> None:
+        with self.conn() as c:
+            c.execute("UPDATE utterances SET busy = 0 WHERE busy = 1")
+
+    def rename_speaker(self, rec_id: str, idx: int, name: str) -> None:
+        with self.conn() as c:
+            c.execute(
+                "INSERT INTO speakers (recording_id, idx, name) VALUES (?,?,?)"
+                " ON CONFLICT(recording_id, idx) DO UPDATE SET name = excluded.name",
+                (rec_id, idx, name),
+            )
+
+    def add_speaker(self, rec_id: str, name: Optional[str] = None) -> dict[str, Any]:
+        with self.conn() as c:
+            row = c.execute(
+                "SELECT COALESCE(MAX(idx), -1) + 1 AS n FROM speakers WHERE recording_id = ?", (rec_id,)
+            ).fetchone()
+            idx = row["n"]
+            name = name or f"화자 {idx + 1}"
+            c.execute("INSERT INTO speakers (recording_id, idx, name) VALUES (?,?,?)", (rec_id, idx, name))
+        return {"idx": idx, "name": name}
+
     def get_transcript(self, rec_id: str) -> dict[str, Any]:
         with self.conn() as c:
             speakers = c.execute(
                 "SELECT idx, name FROM speakers WHERE recording_id = ? ORDER BY idx", (rec_id,)
             ).fetchall()
             utts = c.execute(
-                "SELECT id, idx, speaker, start, end, language, text, words FROM utterances"
-                " WHERE recording_id = ? ORDER BY idx", (rec_id,)
+                "SELECT * FROM utterances WHERE recording_id = ? ORDER BY idx", (rec_id,)
             ).fetchall()
         return {
             "speakers": [dict(s) for s in speakers],
-            "utterances": [{**dict(u), "words": json.loads(u["words"])} for u in utts],
+            "utterances": [_utterance(u) for u in utts],
         }
+
+
+def _migrate(c: sqlite3.Connection) -> None:
+    """예전 버전으로 만든 DB에 새 칸을 추가한다."""
+    cols = {r["name"] for r in c.execute("PRAGMA table_info(utterances)")}
+    if "busy" not in cols:
+        c.execute("ALTER TABLE utterances ADD COLUMN busy INTEGER NOT NULL DEFAULT 0")
+
+
+def _utterance(row: sqlite3.Row) -> dict[str, Any]:
+    d = {k: row[k] for k in ("id", "recording_id", "idx", "speaker", "start", "end", "language", "text")}
+    d["words"] = json.loads(row["words"])
+    d["busy"] = bool(row["busy"])
+    return d
 
 
 def _recording(row: sqlite3.Row) -> dict[str, Any]:
