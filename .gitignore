@@ -11,3 +11,4 @@ data/
 *.webm
 !tests/audio/*.wav
 tests/audio/long_*.wav
+.claude/
