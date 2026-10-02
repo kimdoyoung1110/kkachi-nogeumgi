@@ -74,7 +74,7 @@ a { color: var(--accent); text-decoration: none; }
   border-bottom: 1px solid var(--border);
 }
 .brand { display: flex; align-items: center; gap: 8px; color: var(--text); font-weight: 700; font-size: 17px; }
-.brand-mark { font-size: 22px; }
+.brand-mark { font-size: 22px; display: inline-grid; place-items: center; min-width: 28px; min-height: 28px; }
 .topbar-actions { display: flex; gap: 8px; flex-shrink: 0; }
 .search { position: relative; flex: 1; max-width: 360px; }
 .search input {
@@ -402,6 +402,8 @@ mark { background: color-mix(in srgb, var(--warn) 28%, transparent); color: inhe
 .level-icon { width: 72px; height: 72px; display: grid; place-items: center; border-radius: 20px; background: var(--surface-2); flex-shrink: 0; }
 .kk-art { position: relative; width: 56px; height: 56px; }
 .kk-art.big { width: 120px; height: 120px; margin: 0 auto; }
+.kk-art.tiny { width: 28px; height: 28px; }
+.kk-art.tiny .kk-badge { width: 60%; height: 60%; right: -22%; top: -22%; }
 .kk-art img { position: absolute; display: block; }
 .kk-main { inset: 0; width: 100%; height: 100%; }
 .kk-badge { width: 52%; height: 52%; right: -16%; top: -16%; animation: badge-bob 1.6s ease-in-out infinite; filter: drop-shadow(0 2px 3px rgba(0,0,0,.18)); }

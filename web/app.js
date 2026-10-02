@@ -594,6 +594,17 @@ function renderStudy() {
   }
 }
 
+// 상단 이름 옆 로고 = 지금 레벨의 까치 (모든 화면에서 보임)
+let brandLevel = null;
+function updateBrandMark() {
+  const li = levelFor(studyStats().total);
+  if (li === brandLevel) return;
+  brandLevel = li;
+  const mark = $(".brand-mark");
+  mark.innerHTML = levelArt(li, "tiny");
+  mark.title = `Lv.${li + 1} ${LEVELS[li].title}`;
+}
+
 function celebrateLevel(li) {
   const lv = LEVELS[li];
   const name = state.gift.name ? `${state.gift.name}의 ` : "";
@@ -2017,6 +2028,7 @@ async function refresh() {
   if (appState.closed) return;
   try {
     state.recordings = await api("/api/recordings");
+    updateBrandMark();
     renderList();
     appState.failures = 0;
     $("#offline-banner").hidden = true;
