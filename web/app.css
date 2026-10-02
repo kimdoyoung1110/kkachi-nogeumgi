@@ -315,6 +315,20 @@ a { color: var(--accent); text-decoration: none; }
 .utt.found { animation: found 2.4s ease; }
 @keyframes found { 0%, 40% { background: var(--warn-soft); border-color: var(--warn); } }
 
+/* ---------- 분류 ---------- */
+.cat-bar { display: flex; gap: 6px; flex-wrap: wrap; margin: -2px 0 14px; }
+.cat-chip {
+  display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--surface); font-size: 14px; font-weight: 600; color: var(--text-2); cursor: pointer;
+}
+.cat-chip span { font-weight: 500; color: var(--text-3); font-size: 12.5px; }
+.cat-chip:hover { border-color: var(--text-3); }
+.cat-chip.on { background: var(--text); border-color: var(--text); color: var(--bg); }
+.cat-chip.on span { color: color-mix(in srgb, var(--bg) 70%, transparent); }
+.cat-tag { display: inline-block; padding: 0 8px; border-radius: 6px; background: var(--accent-soft); color: var(--accent); font-weight: 600; font-size: 12px; line-height: 20px; }
+.cat-btn { border: 1px solid var(--border); background: var(--surface); border-radius: 999px; padding: 1px 10px; font-size: 13px; color: var(--text-2); cursor: pointer; }
+.cat-btn:hover { border-color: var(--text-3); color: var(--text); }
+
 /* ---------- 검색 ---------- */
 .search-title { margin: 0 0 14px; font-size: 18px; }
 .search-results { display: grid; gap: 12px; }

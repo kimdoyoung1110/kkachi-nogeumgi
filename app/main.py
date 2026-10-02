@@ -30,7 +30,8 @@ UPLOAD_CHUNK = 1024 * 1024
 
 
 class RecordingPatch(BaseModel):
-    title: str
+    title: Optional[str] = None
+    subject: Optional[str] = None   # 분류. 빈 문자열이면 '분류 없음'
 
 
 class SpeakerPatch(BaseModel):
@@ -143,6 +144,16 @@ def create_app(
     @app.get("/api/app")
     def app_info() -> dict:
         return {"version": system.version(), "busy": busy_reasons()}
+
+    @app.post("/api/app/client")
+    async def client_info(request: Request) -> dict:
+        """화면이 켜질 때 보내는 환경 정보 (녹음 가능 여부 등). 문제 신고용 로그에 남긴다."""
+        try:
+            info = await request.json()
+        except Exception:
+            info = {}
+        log.info("화면 환경: %s", {k: info.get(k) for k in ("inApp", "mediaRecorder", "mime", "getUserMedia", "ua")})
+        return {"ok": True}
 
     @app.post("/api/app/quit")
     def quit_app() -> dict:
@@ -295,12 +306,22 @@ def create_app(
         return utt
 
     @app.patch("/api/recordings/{rec_id}")
-    def rename_recording(rec_id: str, body: RecordingPatch) -> dict:
-        get_or_404(rec_id)
-        title = body.title.strip()
-        if not title:
-            raise HTTPException(400, "제목을 입력해 주세요.")
-        db.update_recording(rec_id, title=title[:120])
+    def edit_recording(rec_id: str, body: RecordingPatch) -> dict:
+        rec = get_or_404(rec_id)
+        fields: dict = {}
+        if body.title is not None:
+            title = body.title.strip()
+            if not title:
+                raise HTTPException(400, "제목을 입력해 주세요.")
+            fields["title"] = title[:120]
+        if body.subject is not None:
+            subject = body.subject.strip()[:40] or None
+            fields["subject"] = subject
+            if subject and subject not in {x["name"] for x in db.list_subjects()}:
+                # 새 분류: 이 녹음의 용어를 그 분류에 저장해 둔다 (다음 업로드에 자동으로 채워짐)
+                db.save_subject(subject, rec["hotwords"], rec["replacements"])
+        if fields:
+            db.update_recording(rec_id, **fields)
         return with_label(db.get_recording(rec_id))
 
     @app.patch("/api/recordings/{rec_id}/speakers/{idx}")

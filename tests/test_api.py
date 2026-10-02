@@ -431,3 +431,15 @@ def test_merge_speaker_joins_adjacent_paragraphs(make_client):
         assert u["text"] == "해시 테이블입니다. Is that a collision?" and u["end"] == 2.0 and len(u["words"]) == 3
         assert client.post(f"/api/recordings/{rid}/speakers/0/merge", json={"into": 0}).status_code == 400
         assert client.post(f"/api/recordings/{rid}/speakers/5/merge", json={"into": 0}).status_code == 400
+
+
+def test_change_category(make_client):
+    client, app = make_client(FakePipeline())
+    with client:
+        d = _done_recording(client, app)
+        rid = d["id"]
+        r = client.patch(f"/api/recordings/{rid}", json={"subject": " 팀 회의 "}).json()
+        assert r["subject"] == "팀 회의" and r["title"] == "강의 1"
+        assert "팀 회의" in [x["name"] for x in client.get("/api/subjects").json()]
+        assert client.patch(f"/api/recordings/{rid}", json={"subject": ""}).json()["subject"] is None
+        assert client.patch(f"/api/recordings/{rid}", json={"title": "새 제목"}).json()["subject"] is None

@@ -85,6 +85,9 @@ function fmtBytes(n) {
   return Math.max(1, Math.round(n / 1e3)) + "KB";
 }
 
+// 까치녹음기 앱 창(WKWebView) 안에서 열렸는지 (브라우저 탭이 아니라)
+const IN_APP = navigator.userAgent.includes("KkachiApp");
+
 const LANG_LABEL = { null: "한·영 자동", ko: "한국어", en: "영어" };
 const isWorking = (r) => r.status === "queued" || r.status === "processing";
 
@@ -117,6 +120,7 @@ function renderHome() {
     <section id="upload-area"></section>
     <section>
       <div class="section-title"><h2>내 녹음</h2><span class="count" id="rec-count"></span></div>
+      <div class="cat-bar" id="cat-bar" role="tablist" aria-label="분류"></div>
       <div class="rec-list" id="rec-list"></div>
     </section>`;
   renderUploadArea();
@@ -152,10 +156,10 @@ function optionsFieldsHTML(defaultTitle) {
           <span class="field-hint">실제보다 적게 고르면 다른 사람 말이 합쳐져요.</span>
         </label>
         <label class="field">
-          <span class="field-label">과목 <span class="field-hint">(선택)</span></span>
-          <input class="input" name="subject" list="subject-list" placeholder="예: 자료구조" autocomplete="off">
+          <span class="field-label">분류 <span class="field-hint">(선택)</span></span>
+          <input class="input" name="subject" list="subject-list" placeholder="예: 자료구조, 팀 회의" autocomplete="off" value="${esc(currentCategoryName())}">
           <datalist id="subject-list">${subjectOptions}</datalist>
-          <span class="field-hint">과목을 적으면 아래 용어가 저장돼서 다음에 자동으로 채워져요.</span>
+          <span class="field-hint">같은 분류끼리 모아 볼 수 있고, 아래 용어가 저장돼서 다음에 자동으로 채워져요.</span>
         </label>
       </div>
 
@@ -224,6 +228,7 @@ function renderUploadArea() {
   $("#change-file").addEventListener("click", pickFile);
   $("#cancel-upload").addEventListener("click", () => { state.pendingFile = null; renderUploadArea(); });
   form.subject.addEventListener("change", () => fillSubjectTerms(form));
+  if (form.subject.value) fillSubjectTerms(form);
   form.addEventListener("submit", (e) => { e.preventDefault(); submitUpload(form); });
   form.title.focus();
   form.title.select();
@@ -314,7 +319,7 @@ function recItemHTML(r) {
     fmtDate(r.created_at),
     r.duration ? fmtDuration(r.duration) : "",
     LANG_LABEL[r.language],
-    r.subject ? `📚 ${esc(r.subject)}` : "",
+    r.subject ? `<span class="cat-tag">${esc(r.subject)}</span>` : "",
   ].filter(Boolean).map((x) => `<span>${x}</span>`).join("");
 
   const pct = Math.round((r.progress || 0) * 100);
@@ -342,20 +347,77 @@ function recItemHTML(r) {
     </article>`;
 }
 
+/* 분류: "__all__" = 전체, "__none__" = 분류 없음, 그 외는 분류 이름 */
+const CAT_ALL = "__all__", CAT_NONE = "__none__";
+state.category = (() => { try { return localStorage.getItem("kkachi.category") || CAT_ALL; } catch { return CAT_ALL; } })();
+
+function currentCategoryName() {
+  return state.category === CAT_ALL || state.category === CAT_NONE ? "" : state.category;
+}
+
+function setCategory(cat) {
+  state.category = cat;
+  try { localStorage.setItem("kkachi.category", cat); } catch {}
+  renderList();
+}
+
+function categoriesWithCounts() {
+  // 최근에 쓴 분류가 앞으로
+  const map = new Map();
+  for (const r of state.recordings) {
+    if (!r.subject) continue;
+    const c = map.get(r.subject) || { name: r.subject, count: 0, last: 0 };
+    c.count++;
+    c.last = Math.max(c.last, r.created_at);
+    map.set(r.subject, c);
+  }
+  return [...map.values()].sort((a, b) => b.last - a.last);
+}
+
+function inCategory(r) {
+  if (state.category === CAT_ALL) return true;
+  if (state.category === CAT_NONE) return !r.subject;
+  return r.subject === state.category;
+}
+
+function renderCategories() {
+  const bar = $("#cat-bar");
+  if (!bar) return;
+  const cats = categoriesWithCounts();
+  const none = state.recordings.filter((r) => !r.subject).length;
+  // 고른 분류가 사라졌으면 전체로
+  if (state.category !== CAT_ALL && state.category !== CAT_NONE && !cats.some((c) => c.name === state.category)) state.category = CAT_ALL;
+  if (state.category === CAT_NONE && !none) state.category = CAT_ALL;
+  if (!cats.length) { bar.innerHTML = ""; return; }
+  const chip = (value, label, count) => `
+    <button class="cat-chip ${state.category === value ? "on" : ""}" role="tab" aria-selected="${state.category === value}" data-cat="${esc(value)}">
+      ${esc(label)}<span>${count}</span>
+    </button>`;
+  bar.innerHTML = chip(CAT_ALL, "전체", state.recordings.length)
+    + cats.map((c) => chip(c.name, c.name, c.count)).join("")
+    + (none ? chip(CAT_NONE, "분류 없음", none) : "");
+}
+
 function renderList() {
   const list = $("#rec-list");
   if (!list) return;
   $("#rec-count").textContent = state.recordings.length ? `${state.recordings.length}개` : "";
+  renderCategories();
 
   if (!state.recordings.length) {
     list.innerHTML = `<div class="empty"><div class="empty-icon">🐦‍⬛</div>아직 녹음이 없어요.<br>위에서 파일을 올려보세요.</div>`;
+    return;
+  }
+  const shown = state.recordings.filter(inCategory);
+  if (!shown.length) {
+    list.innerHTML = `<div class="empty">이 분류에는 녹음이 없어요.</div>`;
     return;
   }
 
   // 진행률 막대가 부드럽게 움직이도록, 상태가 같은 항목은 숫자만 바꾼다
   const existing = new Map([...list.querySelectorAll(".rec")].map((el) => [el.dataset.id, el]));
   const frag = document.createDocumentFragment();
-  for (const r of state.recordings) {
+  for (const r of shown) {
     let el = existing.get(r.id);
     const html = recItemHTML(r).trim();
     if (el && el.dataset.status === r.status) {
@@ -386,6 +448,8 @@ function renderList() {
 }
 
 $("#view").addEventListener("click", async (e) => {
+  const chip = e.target.closest(".cat-chip");
+  if (chip) return setCategory(chip.dataset.cat);
   const item = e.target.closest(".rec");
   if (!item) return;
   const id = item.dataset.id;
@@ -437,7 +501,7 @@ async function renderDetail(id, params = new URLSearchParams()) {
     <div class="detail-head">
       <h1 class="editable-title" id="title" title="눌러서 제목 바꾸기">${esc(d.title)}</h1>
       <div class="detail-meta-row">
-        <div class="rec-meta"><span>${fmtDate(d.created_at)}</span><span>${fmtDuration(d.duration)}</span><span>${LANG_LABEL[d.language]}</span>${d.subject ? `<span>📚 ${esc(d.subject)}</span>` : ""}</div>
+        <div class="rec-meta"><span>${fmtDate(d.created_at)}</span><span>${fmtDuration(d.duration)}</span><span>${LANG_LABEL[d.language]}</span><button class="cat-btn" id="cat-btn" title="분류 바꾸기">${d.subject ? esc(d.subject) : "분류 없음"} ▾</button></div>
         <div class="detail-actions">
           <button class="btn btn-sm btn-primary" id="ai-copy">AI 요약용 복사 ▾</button>
           <button class="btn btn-sm btn-ghost" id="copy-all">전체 복사</button>
@@ -595,6 +659,38 @@ function aiMenu(anchor) {
     "-",
     { label: "전사문만 (요청 문구 없이)", icon: "📄", run: () => copyText(transcriptForAI(""), "전사문을 복사했어요.") },
   ]);
+}
+
+async function categoryMenu(anchor) {
+  const names = [...new Set([...categoriesWithCounts().map((c) => c.name), ...state.subjects.map((x) => x.name)])];
+  const cur = detail.data.subject || "";
+  const items = names.map((n) => ({
+    label: n + (n === cur ? "  ✓" : ""), icon: "📁", disabled: n === cur, run: () => setRecordingCategory(n),
+  }));
+  if (items.length) items.push("-");
+  items.push({ label: "새 분류 만들기…", icon: "＋", run: newCategory });
+  if (cur) items.push({ label: "분류 없음으로", icon: "✕", run: () => setRecordingCategory("") });
+  openMenu(anchor, items);
+}
+
+async function newCategory() {
+  const ok = await confirmDialog(
+    `<b>새 분류 이름</b><input class="input" id="new-cat" maxlength="40" placeholder="예: 자료구조, 팀 회의" style="margin-top:10px">`,
+    "만들기", { html: true, primary: true });
+  const name = ($("#new-cat")?.value || "").trim();
+  if (ok && name) setRecordingCategory(name);
+}
+
+async function setRecordingCategory(name) {
+  try {
+    const r = await api(`/api/recordings/${detail.id}`, jsonOpts("PATCH", { subject: name }));
+    detail.data.subject = r.subject;
+    $("#cat-btn").textContent = `${r.subject || "분류 없음"} ▾`;
+    const i = state.recordings.findIndex((x) => x.id === r.id);
+    if (i >= 0) state.recordings[i] = r;
+    loadSubjects();
+    toast(r.subject ? `'${r.subject}' 분류로 옮겼어요.` : "분류를 뺐어요.");
+  } catch (err) { toast(err.message, "error"); }
 }
 
 async function redoAll() {
@@ -959,6 +1055,8 @@ view.addEventListener("input", (e) => { if (e.target.id === "edit-text") autosiz
 function detailClick(e) {
   if (!detail.data || !location.hash.startsWith("#/r/")) return;
   if (e.target.closest("#copy-all")) return copyAll();
+  const cb = e.target.closest("#cat-btn");
+  if (cb) { e.stopPropagation(); return categoryMenu(cb); }
   if (e.target.closest("#redo-all")) return redoAll();
   const ai = e.target.closest("#ai-copy");
   if (ai) { e.stopPropagation(); return aiMenu(ai); }
@@ -1152,7 +1250,9 @@ async function startRecording() {
   if (state.pendingFile) { toast("올리던 파일을 먼저 처리하거나 취소해 주세요.", "error"); return; }
   const fmt = pickMime();
   if (!navigator.mediaDevices?.getUserMedia || !fmt) {
-    toast("이 브라우저에서는 녹음을 할 수 없어요. 크롬이나 사파리에서 열어주세요.", "error");
+    toast(IN_APP
+      ? "이 맥에서는 앱 창 녹음을 쓸 수 없어요. 메뉴의 '브라우저에서 열기'로 열어서 녹음해 주세요."
+      : "이 브라우저에서는 녹음을 할 수 없어요. 크롬이나 사파리에서 열어주세요.", "error");
     return;
   }
 
@@ -1165,7 +1265,9 @@ async function startRecording() {
   } catch (err) {
     const denied = err && (err.name === "NotAllowedError" || err.name === "SecurityError");
     toast(denied
-      ? "마이크를 쓸 수 없어요. 브라우저 주소창의 마이크 권한을 허용하고, 시스템 설정 › 개인정보 보호 및 보안 › 마이크에서 브라우저를 켜주세요."
+      ? (IN_APP
+        ? "마이크를 쓸 수 없어요. 시스템 설정 › 개인정보 보호 및 보안 › 마이크에서 '까치녹음기'를 켜주세요."
+        : "마이크를 쓸 수 없어요. 브라우저 주소창의 마이크 권한을 허용하고, 시스템 설정 › 개인정보 보호 및 보안 › 마이크에서 브라우저를 켜주세요.")
       : "마이크를 찾을 수 없어요. 마이크가 연결돼 있는지 확인해 주세요.", "error");
     return;
   }
@@ -1324,7 +1426,7 @@ function renderRecordingPanel(area) {
       </div>
       <ul class="rec-tips">
         <li>맥북 뚜껑을 닫으면 녹음이 멈춰요. 긴 강의는 충전기를 연결해 두세요.</li>
-        <li>이 창을 닫아도 그때까지 녹음된 부분은 저장돼요.</li>
+        <li>${IN_APP ? "창을 닫아도 녹음은 계속돼요. 끝낼 땐 Dock 의 까치녹음기를 눌러 창을 다시 여세요." : "이 창을 닫아도 그때까지 녹음된 부분은 저장돼요."}</li>
       </ul>
     </section>`;
   $("#btn-pause").addEventListener("click", togglePause);
@@ -1367,6 +1469,7 @@ function renderRecordedForm(area) {
     </form>`;
   const form = $("#finish-form");
   form.subject.addEventListener("change", () => fillSubjectTerms(form));
+  if (form.subject.value) fillSubjectTerms(form);
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
     const btn = $("#submit-finish");
@@ -1490,7 +1593,7 @@ async function quitApp() {
   try { await api("/api/app/quit", { method: "POST" }); } catch {}
   appState.closed = true;
   clearTimeout(state.pollTimer);
-  showOverlay("🐦‍⬛", "까치녹음기를 껐어요", "이 탭은 닫아도 돼요.<br>다시 쓰려면 Dock의 <b>까치녹음기</b>를 누르세요.");
+  showOverlay("🐦‍⬛", "까치녹음기를 껐어요", (IN_APP ? "" : "이 탭은 닫아도 돼요.<br>") + "다시 쓰려면 Dock의 <b>까치녹음기</b>를 누르세요.");
 }
 
 const GUIDE = [
@@ -1586,3 +1689,16 @@ window.addEventListener("drop", (e) => {
 loadSubjects();
 route();
 maybeShowGuide();
+
+// 이 화면에서 녹음이 되는지 서버 로그에 남긴다 (문제 신고 때 확인용)
+fetch("/api/app/client", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    inApp: IN_APP,
+    mediaRecorder: typeof MediaRecorder !== "undefined",
+    mime: pickMime()?.mime || null,
+    getUserMedia: !!navigator.mediaDevices?.getUserMedia,
+    ua: navigator.userAgent,
+  }),
+}).catch(() => {});
