@@ -267,6 +267,32 @@ class Database:
                 rows = c.execute(base + " WHERE u.text LIKE ? ESCAPE '\\'" + order, (like, limit)).fetchall()
         return [dict(r) for r in rows]
 
+    def merge_speaker(self, rec_id: str, src: int, dst: int) -> None:
+        """src 화자의 문단을 모두 dst 로 옮기고, 그 결과 붙어 있게 된 같은 화자 문단을 하나로 합친다."""
+        with self.conn() as c:
+            c.execute("UPDATE utterances SET speaker = ? WHERE recording_id = ? AND speaker = ?", (dst, rec_id, src))
+            c.execute("DELETE FROM speakers WHERE recording_id = ? AND idx = ?", (rec_id, src))
+            rows = c.execute(
+                "SELECT id, speaker, end, text, words, busy FROM utterances WHERE recording_id = ? ORDER BY start, idx",
+                (rec_id,),
+            ).fetchall()
+            keep = None
+            for r in rows:
+                if (keep is not None and r["speaker"] == keep["speaker"] == dst
+                        and not keep["busy"] and not r["busy"]):
+                    keep["text"] = keep["text"] + " " + r["text"]
+                    keep["end"] = max(keep["end"], r["end"])
+                    keep["words"] = json.dumps(json.loads(keep["words"]) + json.loads(r["words"]), ensure_ascii=False)
+                    c.execute("UPDATE utterances SET text = ?, end = ?, words = ? WHERE id = ?",
+                              (keep["text"], keep["end"], keep["words"], keep["id"]))
+                    c.execute("DELETE FROM utterances WHERE id = ?", (r["id"],))
+                else:
+                    keep = dict(r)
+            # 순서 번호 다시 매기기
+            ids = c.execute("SELECT id FROM utterances WHERE recording_id = ? ORDER BY start, idx", (rec_id,)).fetchall()
+            for i, r in enumerate(ids):
+                c.execute("UPDATE utterances SET idx = ? WHERE id = ?", (i, r["id"]))
+
     def get_transcript(self, rec_id: str) -> dict[str, Any]:
         with self.conn() as c:
             speakers = c.execute(

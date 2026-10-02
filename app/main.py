@@ -37,6 +37,10 @@ class SpeakerPatch(BaseModel):
     name: str
 
 
+class SpeakerMerge(BaseModel):
+    into: int
+
+
 class UtterancePatch(BaseModel):
     text: Optional[str] = None
     speaker: Optional[int] = None
@@ -307,6 +311,15 @@ def create_app(
             raise HTTPException(400, "이름을 입력해 주세요.")
         db.rename_speaker(rec_id, idx, name[:40])
         return {"idx": idx, "name": name[:40]}
+
+    @app.post("/api/recordings/{rec_id}/speakers/{idx}/merge")
+    def merge_speaker(rec_id: str, idx: int, body: SpeakerMerge) -> dict:
+        get_or_404(rec_id)
+        known = {s["idx"] for s in db.get_transcript(rec_id)["speakers"]}
+        if idx not in known or body.into not in known or idx == body.into:
+            raise HTTPException(400, "합칠 화자를 다시 골라주세요.")
+        db.merge_speaker(rec_id, idx, body.into)
+        return db.get_transcript(rec_id)
 
     @app.post("/api/recordings/{rec_id}/speakers", status_code=201)
     def add_speaker(rec_id: str) -> dict:

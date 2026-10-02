@@ -6,19 +6,28 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Optional
 
 import numpy as np
 
 from app import config, segmenter
 from app.diarize import Diarizer
-from app.langid import LanguageIdentifier, fill_unknown
+from app.langid import LanguageIdentifier, decide
 from app.merge import Utterance, assign_speakers, build_utterances
 from app.stt import ProgressFn, Segment, Transcriber
 
 
+log = logging.getLogger(__name__)
+
+
 class Pipeline:
     def __init__(self):
+        try:
+            import mlx.core as mx
+            mx.set_cache_limit(int(config.MLX_CACHE_LIMIT_GB * 1e9))
+        except Exception:
+            pass
         self.transcriber = Transcriber()
         self.diarizer = Diarizer()
         self.langid = LanguageIdentifier()
@@ -71,12 +80,15 @@ class Pipeline:
             return spans, [None] * len(spans)
         if progress:
             progress("langid", 0, len(pieces))
-        raw = []
+        scores = []
         for i, piece in enumerate(pieces):
-            raw.append(self.langid.identify(audio[piece.span.start:piece.span.end]))
+            scores += self.langid.score_pieces([audio[piece.span.start:piece.span.end]])
             if progress and ((i + 1) % 20 == 0 or i + 1 == len(pieces)):
                 progress("langid", i + 1, len(pieces))
-        labels = fill_unknown(raw)
+        durations = [(pc.span.end - pc.span.start) / sr for pc in pieces]
+        labels, dominant = decide(durations, scores)
+        log.info("언어 감지: 주 언어 %s, 조각 %d개 중 다른 언어 %d개",
+                 dominant, len(labels), sum(1 for x in labels if x != dominant))
 
         spans, langs = [], []
         for a, b, lang in segmenter.language_regions(pieces, labels, len(audio)):

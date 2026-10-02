@@ -62,7 +62,8 @@ def test_upload_process_and_fetch(make_client, tmp_path):
                    replacements="컬리전=collision\n세프리 체인잉 → separate chaining")
         assert r.status_code == 201
         rec = r.json()
-        assert rec["title"] == "강의 1" and rec["status"] == "queued"
+        # 처리기가 빠르면 응답 전에 이미 처리 중일 수 있다 (예전에 가끔 실패하던 원인)
+        assert rec["title"] == "강의 1" and rec["status"] in ("queued", "processing", "done")
         assert app.state.worker.wait_idle()
 
         d = client.get(f"/api/recordings/{rec['id']}").json()
@@ -215,7 +216,7 @@ def test_live_recording_flow(make_client, tmp_path):
         assert client.post(f"/api/recordings/{rid}/retry").status_code == 409  # 녹음 중엔 불가
         r = client.post(f"/api/live/{rid}/finish", data={"title": "자료구조 녹음",
                                                          "language": "ko", "subject": "자료구조"})
-        assert r.status_code == 200 and r.json()["status"] == "queued"
+        assert r.status_code == 200 and r.json()["status"] in ("queued", "processing", "done")
         app.state.worker.wait_idle()
 
         d = client.get(f"/api/recordings/{rid}").json()
@@ -413,3 +414,20 @@ def test_quit_and_logs(make_client, monkeypatch, tmp_path):
         assert client.post("/api/app/quit").json() == {"ok": True} and quits == [1]
         r = client.post("/api/app/logs").json()
         assert r["name"].startswith("까치녹음기-로그-") and (tmp_path / "desk" / r["name"]).exists()
+
+
+def test_merge_speaker_joins_adjacent_paragraphs(make_client):
+    client, app = make_client(FakePipeline())
+    with client:
+        d = _done_recording(client, app)
+        rid = d["id"]
+        # 화자 0 문단 뒤에 화자 1 문단 → 1을 0으로 합치면 문단 하나가 된다
+        r = client.post(f"/api/recordings/{rid}/speakers/1/merge", json={"into": 0})
+        assert r.status_code == 200
+        t = r.json()
+        assert [s["idx"] for s in t["speakers"]] == [0]
+        assert len(t["utterances"]) == 1
+        u = t["utterances"][0]
+        assert u["text"] == "해시 테이블입니다. Is that a collision?" and u["end"] == 2.0 and len(u["words"]) == 3
+        assert client.post(f"/api/recordings/{rid}/speakers/0/merge", json={"into": 0}).status_code == 400
+        assert client.post(f"/api/recordings/{rid}/speakers/5/merge", json={"into": 0}).status_code == 400

@@ -38,6 +38,19 @@ class Utterance:
     words: list[SpeakerWord] = field(default_factory=list)
 
 
+# 말한 시간이 이보다 적은 화자는 잡음으로 보고 없앤다 (초, 전체 말 시간 대비 비율 중 큰 쪽).
+# 강의에서 학생이 한 번 질문한 것(10초)은 남아야 하므로 아주 작게 잡는다. 같은 사람이 두 화자로
+# 나뉜 경우는 화면의 '다른 화자와 합치기'로 사람이 고친다.
+MINOR_SPEAKER_SECONDS = 3.0
+MINOR_SPEAKER_SHARE = 0.002
+# A A [B B] A A: 이만큼 짧게 끼어든 화자는 앞뒤 화자로 맞춘다
+BLIP_MAX_WORDS = 3
+BLIP_MAX_SECONDS = 1.5
+# 문장이 안 끝났는데 이만큼 짧게 다른 화자가 붙으면 앞 화자 말이 이어진 것으로 본다 ("So it's" / "like")
+CONTINUATION_MAX_WORDS = 2
+CONTINUATION_MAX_SECONDS = 0.8
+
+
 def assign_speakers(
     segments: list[Segment],
     activity: SpeakerActivity,
@@ -46,23 +59,46 @@ def assign_speakers(
     """단어마다 그 시간 동안 확률이 가장 높은 화자를 붙인다.
 
     num_speakers 를 주면 말한 시간이 가장 긴 N명만 남기고, 나머지 화자의 단어는 남은 N명 중 하나로 보낸다.
+    말한 시간이 아주 적은 화자는 오류로 보고 없앤 뒤 다시 붙인다.
     """
     allowed = np.arange(activity.probs.shape[1])
     if num_speakers:
         allowed = np.argsort(-activity.total_activity())[:num_speakers]
 
-    out: list[SpeakerWord] = []
-    for seg in segments:
-        words = seg.words or [Word(seg.text, seg.start, seg.end)]
-        for w in words:
-            p = activity.mean_probs(w.start, w.end)[allowed]
-            spk = int(allowed[int(np.argmax(p))]) if p.max() > 0.05 else -1
-            out.append(SpeakerWord(w.text, w.start, w.end, spk, word_language(w.text, seg.language)))
+    words = sorted(
+        ((w, seg.language) for seg in segments for w in (seg.words or [Word(seg.text, seg.start, seg.end)])),
+        key=lambda x: x[0].start,
+    )
+    probs = [activity.mean_probs(w.start, w.end) for w, _ in words]
+
+    def assign(allowed_idx: np.ndarray) -> list[SpeakerWord]:
+        out = []
+        for (w, lang), p_all in zip(words, probs):
+            p = p_all[allowed_idx]
+            spk = int(allowed_idx[int(np.argmax(p))]) if p.size and p.max() > 0.05 else -1
+            out.append(SpeakerWord(w.text, w.start, w.end, spk, word_language(w.text, lang)))
+        return out
+
+    out = assign(allowed)
+    minor = _minor_speakers(out)
+    if minor and len(minor) < len(set(w.speaker for w in out if w.speaker != -1)):
+        out = assign(np.array([a for a in allowed if int(a) not in minor]))
 
     _fill_unknown(out)
     _smooth(out)
+    _attach_continuations(out)
     _renumber(out)
     return out
+
+
+def _minor_speakers(words: list[SpeakerWord]) -> set[int]:
+    talk: dict[int, float] = {}
+    for w in words:
+        if w.speaker != -1:
+            talk[w.speaker] = talk.get(w.speaker, 0.0) + max(0.0, w.end - w.start)
+    total = sum(talk.values())
+    limit = max(MINOR_SPEAKER_SECONDS, MINOR_SPEAKER_SHARE * total)
+    return {spk for spk, t in talk.items() if t < limit}
 
 
 def _fill_unknown(words: list[SpeakerWord]) -> None:
@@ -81,23 +117,45 @@ def _fill_unknown(words: list[SpeakerWord]) -> None:
             nxt = w.speaker
 
 
-def _smooth(words: list[SpeakerWord], max_words: int = 1, max_seconds: float = 0.6) -> None:
-    """A A [B] A A 처럼 짧게 튀는 화자는 앞뒤 화자로 맞춘다."""
-    i = 0
+def _runs(words: list[SpeakerWord]) -> list[tuple[int, int]]:
+    """같은 화자가 연달아 말한 단어 묶음 [(시작 인덱스, 끝 인덱스)]."""
+    runs, i = [], 0
     while i < len(words):
         j = i
         while j + 1 < len(words) and words[j + 1].speaker == words[i].speaker:
             j += 1
-        run_len = j - i + 1
-        run_dur = words[j].end - words[i].start
+        runs.append((i, j))
+        i = j + 1
+    return runs
+
+
+def _smooth(words: list[SpeakerWord]) -> None:
+    """A A [B B] A A 처럼 짧게 튀는 화자는 앞뒤 화자로 맞춘다."""
+    for i, j in _runs(words):
         if (
             0 < i and j < len(words) - 1
             and words[i - 1].speaker == words[j + 1].speaker
-            and run_len <= max_words and run_dur <= max_seconds
+            and j - i + 1 <= BLIP_MAX_WORDS
+            and words[j].end - words[i].start <= BLIP_MAX_SECONDS
         ):
             for k in range(i, j + 1):
                 words[k].speaker = words[i - 1].speaker
-        i = j + 1
+
+
+def _attach_continuations(words: list[SpeakerWord]) -> None:
+    """앞 화자의 문장이 안 끝났는데 아주 짧은 다른 화자 조각이 바로 붙으면 앞 화자 말로 본다."""
+    for i, j in _runs(words):
+        if i == 0:
+            continue
+        prev = words[i - 1]
+        if (
+            not prev.text.endswith(SENTENCE_END)
+            and j - i + 1 <= CONTINUATION_MAX_WORDS
+            and words[j].end - words[i].start <= CONTINUATION_MAX_SECONDS
+            and words[i].start - prev.end < 0.5
+        ):
+            for k in range(i, j + 1):
+                words[k].speaker = prev.speaker
 
 
 def _renumber(words: list[SpeakerWord]) -> None:

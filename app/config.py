@@ -26,7 +26,22 @@ DIARIZATION_MODEL = "mlx-community/Nemotron-3-Diarization"
 # 언어 감지 (한·영 혼합 모드): SpeechBrain ECAPA VoxLingua107 MLX 변환본. Apache-2.0, 약 80MB.
 LANGID_MODEL = "beshkenadze/lang-id-voxlingua107-ecapa-mlx"
 ASR_CHUNK_SECONDS = 30
-ASR_BATCH_SIZE = 8
+
+
+def _ram_gb() -> float:
+    try:
+        import subprocess
+        out = subprocess.run(["sysctl", "-n", "hw.memsize"], capture_output=True, text=True, timeout=5).stdout
+        return int(out.strip()) / 2**30
+    except Exception:
+        return 16.0
+
+
+RAM_GB = _ram_gb()
+# 16GB 맥에서 8개씩 묶으면 최대 12GB 가까이 써서 맥 전체가 느려졌다 (66분 회의 실측) → 메모리에 맞춰 줄인다
+ASR_BATCH_SIZE = int(os.environ.get("KKACHI_BATCH", 4 if RAM_GB <= 16.5 else 8))
+# MLX 가 계산 후 들고 있는 임시 메모리 상한 (GB)
+MLX_CACHE_LIMIT_GB = float(os.environ.get("KKACHI_MLX_CACHE_GB", 1.0 if RAM_GB <= 16.5 else 4.0))
 SAMPLE_RATE = 16000
 
 

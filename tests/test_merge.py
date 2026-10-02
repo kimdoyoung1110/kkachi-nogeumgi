@@ -67,3 +67,20 @@ def test_utterance_language_mixed():
     act = activity([(0, 9, 0)])
     segs = [seg([("What", 0, 1), ("is", 1, 2), ("this?", 2, 3)], "en"), seg([("네", 3, 4), ("맞아요", 4, 5)], "ko")]
     assert build_utterances(assign_speakers(segs, act))[0].language == "mixed"
+
+
+def test_minor_noise_speaker_removed_but_short_question_kept():
+    # 화자 0 이 60초 말하는 중 1초짜리 잡음 화자 3, 그리고 10초 질문한 화자 1
+    act = activity([(0, 30, 0), (30, 31, 3), (31, 60, 0), (60, 70, 1), (70, 90, 0)], n_frames=9000)
+    words = [("가", t, t + 0.9) for t in range(0, 90)]
+    utts = build_utterances(assign_speakers([seg(words)], act))
+    speakers = {u.speaker for u in utts}
+    assert speakers == {0, 1}  # 잡음 화자(1초)는 사라지고, 10초 질문한 사람은 남는다
+
+
+def test_continuation_fragment_attached_to_previous_speaker():
+    # "So it's"(화자0) 바로 뒤 "like"(화자1, 0.3초) 는 문장이 안 끝났으므로 화자0 말
+    act = activity([(0, 1.0, 0), (1.0, 1.3, 1), (1.4, 5, 2)])
+    segs = [seg([("So", 0.1, 0.4), ("it's", 0.4, 0.9), ("like", 1.0, 1.3), ("네.", 1.5, 2.0)])]
+    words = assign_speakers(segs, act)
+    assert words[2].speaker == words[0].speaker

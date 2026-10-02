@@ -19,8 +19,13 @@ from app import config
 ALLOWED = ("ko", "en")
 # 1등 언어 확률(허용 언어끼리 재정규화)이 이보다 낮으면 '모름'으로 두고 앞뒤 조각을 따른다
 MIN_CONFIDENCE = 0.7
-# 이보다 짧은 조각은 판정하지 않는다 (너무 짧으면 부정확)
-MIN_SECONDS = 1.0
+# 이보다 짧은 조각은 판정하지 않는다. 웃음·맞장구·잡음 같은 짧은 소리를 영어로 잘못 보고
+# 영어로 받아쓰게 하면 모델이 없는 영어 문장을 지어낸다 (실제 회의: "Hola, soy Amanda Scott.")
+MIN_SECONDS = 2.0
+# 녹음의 이 비율 이상이 한 언어면 '주 언어'. 다른 언어는 아주 확실하고 충분히 길 때만 인정
+DOMINANT_SHARE = 0.8
+MINORITY_CONFIDENCE = 0.97
+MINORITY_MIN_SECONDS = 3.0
 
 
 class LanguageIdentifier:
@@ -63,12 +68,39 @@ class LanguageIdentifier:
         total = sum(raw.values()) or 1.0
         return {k: v / total for k, v in raw.items()}
 
-    def identify(self, audio: np.ndarray) -> Optional[str]:
-        if len(audio) < MIN_SECONDS * config.SAMPLE_RATE:
-            return None
-        s = self.scores(audio)
+    def score_pieces(self, pieces: list[np.ndarray]) -> list[Optional[dict[str, float]]]:
+        """조각마다 언어 확률. 너무 짧은 조각은 None."""
+        sr = config.SAMPLE_RATE
+        return [self.scores(a) if len(a) >= MIN_SECONDS * sr else None for a in pieces]
+
+
+def decide(durations: list[float], scores: list[Optional[dict[str, float]]]) -> tuple[list[str], str]:
+    """조각별 언어를 정한다. (조각별 언어, 녹음의 주 언어)
+
+    1) 2초 이상이고 70% 이상 확실한 조각만 판정
+    2) 녹음의 80% 이상이 한 언어면, 다른 언어는 97% 이상 확실하고 3초 이상일 때만 인정
+    3) 판정 못 한 조각은 앞뒤 조각을 따른다
+    """
+    labels: list[Optional[str]] = []
+    for s in scores:
+        if not s:
+            labels.append(None)
+            continue
         lang = max(s, key=s.get)
-        return lang if s[lang] >= MIN_CONFIDENCE else None
+        labels.append(lang if s[lang] >= MIN_CONFIDENCE else None)
+
+    total: dict[str, float] = {}
+    for d, lab in zip(durations, labels):
+        if lab:
+            total[lab] = total.get(lab, 0.0) + d
+    dominant = max(total, key=total.get) if total else "ko"
+    share = total.get(dominant, 0.0) / (sum(total.values()) or 1.0)
+
+    if share >= DOMINANT_SHARE:
+        for i, (d, lab) in enumerate(zip(durations, labels)):
+            if lab and lab != dominant and not (scores[i][lab] >= MINORITY_CONFIDENCE and d >= MINORITY_MIN_SECONDS):
+                labels[i] = dominant
+    return fill_unknown(labels, default=dominant), dominant
 
 
 def fill_unknown(labels: list[Optional[str]], default: str = "ko") -> list[str]:

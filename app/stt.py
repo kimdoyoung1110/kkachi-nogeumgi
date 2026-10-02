@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import re
+import zlib
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
@@ -58,10 +59,34 @@ def parse_language(raw: str, forced: Optional[str]) -> tuple[Optional[str], str]
     return QWEN_TO_LANG.get(name, name.lower()), text
 
 
-def looks_repetitive(text: str, min_unit: int = 2, max_unit: int = 20, times: int = 6) -> bool:
-    """같은 문구가 연달아 여러 번 반복되면 모델이 루프에 빠진 것."""
-    pattern = re.compile(r"(.{%d,%d}?)\1{%d,}" % (min_unit, max_unit, times - 1), re.DOTALL)
-    return bool(pattern.search(text))
+# 같은 구절(2~120자)이 5번 이상 연달아 나오면 루프. 실제 회의에서 30자짜리 문장이 2분 넘게 반복된 적 있음
+_LOOP = re.compile(r"(.{2,120}?)(?:\s*\1){4,}", re.DOTALL)
+# 정리용: 4자 이상 구절이 4번 이상 연달아 나오면 한 번만 남긴다 ("네 네 네" 같은 짧은 맞장구는 그대로)
+_COLLAPSE = re.compile(r"(.{4,120}?)(?:\s*\1){3,}", re.DOTALL)
+
+
+def max_chars(duration: float) -> int:
+    """구간 길이로 나올 수 있는 최대 글자 수. 아주 빠른 말도 초당 10자 안팎."""
+    return int(duration * 14) + 60
+
+
+def compression_ratio(text: str) -> float:
+    data = text.encode("utf-8")
+    return len(data) / max(1, len(zlib.compress(data)))
+
+
+def looks_repetitive(text: str, duration: Optional[float] = None) -> bool:
+    """모델이 같은 말을 되풀이하는 루프에 빠졌는지."""
+    if _LOOP.search(text):
+        return True
+    if len(text) > 200 and compression_ratio(text) > 3.0:
+        return True
+    return duration is not None and len(text) > max_chars(duration)
+
+
+def collapse_repeats(text: str) -> str:
+    """다시 받아써도 남은 반복은 한 번만 남긴다 (최후의 안전장치)."""
+    return _COLLAPSE.sub(lambda m: m.group(1), text).strip()
 
 
 _HANGUL = re.compile(r"[가-힣ᄀ-ᇿ㄰-㆏]")
@@ -198,11 +223,11 @@ class Transcriber:
         sampler = make_sampler(0.0, 1.0, 0.0, min_tokens_to_keep=1, top_k=0)
         system_prompt = merge_hotwords(None, hotwords)
 
-        def run(group, lang, logits_processors=None):
+        def run(group, lang, logits_processors=None, max_tokens=None):
             # mlx-audio 0.5.7 내부 함수. 구간 단위 언어 감지와 배치 처리를 우리가 직접 제어하려고 사용.
             texts, *_ = model._generate_chunks_batched(
                 group,
-                max_tokens=TOKENS_PER_CHUNK * len(group),
+                max_tokens=max_tokens or TOKENS_PER_CHUNK * len(group),
                 sampler=sampler,
                 logits_processors=logits_processors,
                 language=LANG_TO_QWEN.get(lang) if lang else None,
@@ -225,18 +250,28 @@ class Transcriber:
         done = 0
         if progress:
             progress("transcribe", 0, len(chunks))
+        import mlx.core as mx
+
         for idx in batches:
             for i, text in zip(idx, run([chunks[i] for i in idx], languages[idx[0]])):
                 out[i] = text
+            mx.clear_cache()  # 묶음마다 임시 메모리 반납
             done += len(idx)
             if progress:
                 progress("transcribe", done, len(chunks))
 
-        # 반복 루프에 빠진 구간은 반복 억제를 켜고 하나씩 다시
+        # 반복 루프에 빠진 구간은 반복 억제를 켜고, 구간 길이에 맞는 글자 수 상한으로 하나씩 다시
         retry = make_logits_processors(repetition_penalty=1.15, repetition_context_size=100)
+        sr = config.SAMPLE_RATE
         for i, text in enumerate(out):
-            if looks_repetitive(text):
-                out[i] = run([chunks[i]], languages[i], retry)[0]
+            dur = len(chunks[i][0]) / sr
+            if looks_repetitive(text, dur):
+                log.warning("반복 루프 감지 (%.0f초 구간, %d자) → 다시 받아씀", chunks[i][1], len(text))
+                cap = min(TOKENS_PER_CHUNK, int(dur * 10) + 32)
+                text = run([chunks[i]], languages[i], retry, max_tokens=cap)[0]
+                if looks_repetitive(text, dur):
+                    text = collapse_repeats(text)
+                out[i] = text
         return out
 
     def _align(self, segments: list[Segment], chunks, progress) -> None:

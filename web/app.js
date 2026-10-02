@@ -439,8 +439,10 @@ async function renderDetail(id, params = new URLSearchParams()) {
       <div class="detail-meta-row">
         <div class="rec-meta"><span>${fmtDate(d.created_at)}</span><span>${fmtDuration(d.duration)}</span><span>${LANG_LABEL[d.language]}</span>${d.subject ? `<span>📚 ${esc(d.subject)}</span>` : ""}</div>
         <div class="detail-actions">
+          <button class="btn btn-sm btn-primary" id="ai-copy">AI 요약용 복사 ▾</button>
           <button class="btn btn-sm btn-ghost" id="copy-all">전체 복사</button>
           <button class="btn btn-sm btn-ghost" id="export-menu">내보내기 ▾</button>
+          <button class="btn btn-sm btn-ghost" id="redo-all" title="처음부터 다시 받아쓰기">↻</button>
         </div>
       </div>
     </div>
@@ -454,7 +456,7 @@ async function renderDetail(id, params = new URLSearchParams()) {
       </div>
     </div>
     <div class="speakers" id="speakers"></div>
-    <p class="hint-line">이름을 누르면 바꿀 수 있어요 · 문장을 두 번 누르면 고칠 수 있어요 · 단어를 누르면 그 부분부터 들려줘요</p>
+    <p class="hint-line">이름을 누르면 바꾸거나 다른 화자와 합칠 수 있어요 · 문장을 두 번 누르면 고칠 수 있어요 · 단어를 누르면 그 부분부터 들려줘요</p>
     <div class="transcript" id="transcript"></div>`;
 
   renderSpeakers();
@@ -493,9 +495,61 @@ function transcriptText() {
   return head.concat(body).join("\n").trimEnd() + "\n";
 }
 
-function copyAll() {
-  const text = transcriptText();
-  // 클립보드 쓰기는 '방금 누른' 순간에만 허용되므로 기다리는 일 없이 바로 쓴다
+const AI_PROMPTS = {
+  meeting: `아래는 회의 녹음을 자동으로 받아쓴 전사문입니다. 음성 인식이라 오인식·잡음이 섞여 있을 수 있어요.
+다음 원칙으로 한국어 회의록을 작성해 주세요.
+- 맥락상 확실한 내용 위주로 정리하고, 뜻이 불분명한 부분은 추측하지 말고 "(전사 불명확)"으로 표시
+- 숫자·날짜·금액·이름은 오인식이 잦으니 확실하지 않으면 표시
+- 같은 말이 계속 반복되는 구간이나 앞뒤와 상관없는 짧은 영어 문장은 인식 오류일 수 있으니 무시
+- 화자 이름은 전사문에 적힌 대로 쓰되, 화자 구분도 틀릴 수 있다는 점을 감안
+
+형식 (노션에 붙여넣기 좋게 마크다운으로):
+1. 한 줄 요약
+2. 주요 논의 (주제별 소제목 + 글머리표)
+3. 결정된 사항
+4. 할 일 (담당자·기한이 언급됐으면 함께)
+5. 미정·추가 확인이 필요한 사항`,
+  lecture: `아래는 강의 녹음을 자동으로 받아쓴 전사문입니다. 음성 인식이라 오인식·잡음이 섞여 있을 수 있어요.
+다음 원칙으로 한국어 강의 노트를 작성해 주세요.
+- 영어 전문 용어는 원어를 함께 적기 (예: 충돌(collision))
+- 뜻이 불분명한 부분은 추측하지 말고 "(전사 불명확)"으로 표시
+- 같은 말이 계속 반복되는 구간이나 앞뒤와 상관없는 짧은 문장은 인식 오류일 수 있으니 무시
+
+형식 (노션에 붙여넣기 좋게 마크다운으로):
+1. 강의 주제와 핵심 요약 (3~5줄)
+2. 개념 정리 (소제목별로 정의·예시·공식)
+3. 교수님이 강조했거나 시험에 나온다고 한 내용
+4. 질문과 답변
+5. 과제·공지 (마감일 포함)`,
+};
+
+function transcriptForAI(kind) {
+  // 같은 화자가 이어서 말한 문단은 한 줄로 합쳐서 짧고 읽기 쉽게 만든다
+  const d = detail.data;
+  const lines = [];
+  let cur = null;
+  for (const u of d.utterances) {
+    if (cur && cur.speaker === u.speaker) { cur.text += " " + u.text; continue; }
+    if (cur) lines.push(cur);
+    cur = { speaker: u.speaker, start: u.start, text: u.text };
+  }
+  if (cur) lines.push(cur);
+  const names = d.speakers.map((s) => s.name).join(", ");
+  const parts = [];
+  if (AI_PROMPTS[kind]) parts.push(AI_PROMPTS[kind], "");
+  parts.push(
+    "[녹음 정보]",
+    `제목: ${d.title}`,
+    `날짜: ${fmtDate(d.created_at)} · 길이 ${fmtDuration(d.duration)}`,
+    `화자: ${names}`,
+    "",
+    "[전사문]",
+    ...lines.map((l) => `${speakerName(l.speaker)} (${fmtClock(l.start)}): ${l.text}`),
+  );
+  return parts.join("\n") + "\n";
+}
+
+function copyText(text, okMessage) {
   const legacyCopy = () => {
     const ta = document.createElement("textarea");
     ta.value = text;
@@ -508,13 +562,37 @@ function copyAll() {
     ta.remove();
     return ok;
   };
-  const done = (ok) => ok
-    ? toast("전체 내용을 복사했어요. 원하는 곳에 붙여넣으세요.")
-    : toast("복사하지 못했어요. '내보내기 › 텍스트'로 파일을 받아주세요.", "error");
-  // 예전 방식(execCommand)은 누른 순간 바로 실행돼서 가장 확실하다. 안 되면 클립보드 API 로 한 번 더.
+  const done = (ok) => ok ? toast(okMessage) : toast("복사하지 못했어요. '내보내기 › 텍스트'로 파일을 받아주세요.", "error");
   if (legacyCopy()) return done(true);
   if (!navigator.clipboard?.writeText) return done(false);
   navigator.clipboard.writeText(text).then(() => done(true), () => done(false));
+}
+
+function aiMenu(anchor) {
+  const unnamed = detail.data.speakers.some((s) => /^화자 \d+$/.test(s.name));
+  const tip = unnamed ? " (화자 이름을 먼저 바꾸면 요약이 더 정확해요)" : "";
+  openMenu(anchor, [
+    { label: "회의록으로 요약 요청", icon: "🗂", run: () => copyText(transcriptForAI("meeting"), "복사했어요. Claude 에 붙여넣으면 회의록으로 정리해줘요." + tip) },
+    { label: "강의 노트로 요약 요청", icon: "📚", run: () => copyText(transcriptForAI("lecture"), "복사했어요. Claude 에 붙여넣으면 강의 노트로 정리해줘요." + tip) },
+    "-",
+    { label: "전사문만 (요청 문구 없이)", icon: "📄", run: () => copyText(transcriptForAI(""), "전사문을 복사했어요.") },
+  ]);
+}
+
+async function redoAll() {
+  const ok = await confirmDialog(
+    "이 녹음을 처음부터 다시 받아쓸까요? 앱이 업데이트됐을 때 더 나은 결과가 나올 수 있어요. 바꾼 화자 이름은 남지만, 직접 고친 글자와 합친 화자는 사라져요.",
+    "다시 받아쓰기", { primary: true });
+  if (!ok) return;
+  try {
+    await api(`/api/recordings/${detail.id}/retry`, { method: "POST" });
+    toast("다시 받아쓰기를 시작했어요. 목록에서 진행 상황을 볼 수 있어요.");
+    location.hash = "#/";
+  } catch (err) { toast(err.message, "error"); }
+}
+
+function copyAll() {
+  copyText(transcriptText(), "전체 내용을 복사했어요. 원하는 곳에 붙여넣으세요.");
 }
 
 function renderSpeakers() {
@@ -523,7 +601,7 @@ function renderSpeakers() {
   const counts = {};
   for (const u of detail.data.utterances) counts[u.speaker] = (counts[u.speaker] || 0) + (u.end - u.start);
   el.innerHTML = detail.data.speakers.map((s) => `
-    <button class="speaker-tag" data-rename="${s.idx}" title="눌러서 이름 바꾸기">
+    <button class="speaker-tag" data-rename="${s.idx}" title="이름 바꾸기 · 합치기">
       <i style="background:${spkColor(s.idx)}"></i>${esc(s.name)}
       <span class="speaker-time">${counts[s.idx] ? fmtDuration(counts[s.idx]) : "0초"}</span>
     </button>`).join("");
@@ -719,6 +797,43 @@ async function saveEdit() {
   if (!(await patchUtt(id, { text }))) { detail.editing = id; replaceUtt(detail.data.utterances.find((x) => x.id === id)); }
 }
 
+function speakerTagMenu(tag, idx) {
+  const others = detail.data.speakers.filter((s) => s.idx !== idx);
+  const items = [{
+    label: "이름 바꾸기", icon: "✎",
+    run: () => inlineRename(tag, speakerName(idx), async (v) => {
+      const r = await api(`/api/recordings/${detail.id}/speakers/${idx}`, jsonOpts("PATCH", { name: v }));
+      detail.data.speakers.find((s) => s.idx === idx).name = r.name;
+    }),
+  }];
+  if (others.length) {
+    items.push("-");
+    for (const o of others) {
+      items.push({
+        label: `${o.name}와(과) 같은 사람이에요`,
+        icon: `<i class="menu-dot" style="background:${spkColor(o.idx)}"></i>`,
+        run: () => mergeSpeaker(idx, o.idx),
+      });
+    }
+  }
+  openMenu(tag, items);
+}
+
+async function mergeSpeaker(src, dst) {
+  const ok = await confirmDialog(
+    `'${speakerName(src)}'의 말을 모두 '${speakerName(dst)}'(으)로 합칠까요? 이어지는 문단도 하나로 묶여요.`,
+    "합치기", { primary: true });
+  if (!ok) return;
+  try {
+    const t = await api(`/api/recordings/${detail.id}/speakers/${src}/merge`, jsonOpts("POST", { into: dst }));
+    detail.data.speakers = t.speakers;
+    detail.data.utterances = t.utterances;
+    renderSpeakers();
+    renderTranscript();
+    toast("합쳤어요.");
+  } catch (err) { toast(err.message, "error"); }
+}
+
 function inlineRename(el, current, save) {
   const input = document.createElement("input");
   input.className = "input inline-input";
@@ -826,6 +941,9 @@ view.addEventListener("input", (e) => { if (e.target.id === "edit-text") autosiz
 function detailClick(e) {
   if (!detail.data || !location.hash.startsWith("#/r/")) return;
   if (e.target.closest("#copy-all")) return copyAll();
+  if (e.target.closest("#redo-all")) return redoAll();
+  const ai = e.target.closest("#ai-copy");
+  if (ai) { e.stopPropagation(); return aiMenu(ai); }
   const ex = e.target.closest("#export-menu");
   if (ex) {
     e.stopPropagation();
@@ -844,11 +962,8 @@ function detailClick(e) {
   }
   const rn = e.target.closest("[data-rename]");
   if (rn) {
-    const idx = Number(rn.dataset.rename);
-    return inlineRename(rn, speakerName(idx), async (v) => {
-      const r = await api(`/api/recordings/${detail.id}/speakers/${idx}`, jsonOpts("PATCH", { name: v }));
-      detail.data.speakers.find((s) => s.idx === idx).name = r.name;
-    });
+    e.stopPropagation();
+    return speakerTagMenu(rn, Number(rn.dataset.rename));
   }
   const uttEl = e.target.closest(".utt");
   if (!uttEl) return;
