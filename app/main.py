@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 import re
 import shutil
+import subprocess
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Callable, Optional
@@ -18,7 +19,7 @@ from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from app import config, export, live
+from app import config, export, live, system
 from app.db import Database
 from app.worker import STAGE_LABELS, Worker
 
@@ -81,6 +82,7 @@ def create_app(
     data_dir = data_dir or config.DATA_DIR
     recordings_dir = data_dir / "recordings"
     recordings_dir.mkdir(parents=True, exist_ok=True)
+    system.setup_logging(data_dir / "logs")
 
     if pipeline_factory is None:
         def pipeline_factory():
@@ -102,6 +104,8 @@ def create_app(
     app = FastAPI(title="까치녹음기", lifespan=lifespan)
     app.state.db = db
     app.state.worker = worker
+    app.state.log_export_dir = None   # None = 바탕화면 (테스트에서 바꿈)
+    app.state.reveal_files = True
 
     def get_or_404(rec_id: str) -> dict:
         rec = db.get_recording(rec_id)
@@ -117,7 +121,56 @@ def create_app(
 
     @app.get("/api/health")
     def health() -> dict:
-        return {"ok": True, "data_dir": str(data_dir)}
+        # 실행기(.app)는 "app" 값으로 우리 서버가 맞는지 확인한다
+        return {"ok": True, "app": "kkachi", "data_dir": str(data_dir)}
+
+    # ---- 앱 관리 (종료 / 업데이트 / 로그) ----
+
+    def busy_reasons() -> list[str]:
+        reasons = []
+        statuses = [r["status"] for r in db.list_recordings()]
+        if worker.busy or "processing" in statuses or "queued" in statuses:
+            reasons.append("받아쓰는 중인 녹음이 있어요")
+        if any(r["status"] == "recording" and not live.is_stalled(recordings_dir / r["id"])
+               for r in db.list_recordings()):
+            reasons.append("녹음 중이에요")
+        return reasons
+
+    @app.get("/api/app")
+    def app_info() -> dict:
+        return {"version": system.version(), "busy": busy_reasons()}
+
+    @app.post("/api/app/quit")
+    def quit_app() -> dict:
+        log.info("화면에서 앱 종료 요청")
+        system.shutdown_soon()
+        return {"ok": True}
+
+    @app.get("/api/app/update")
+    def update_check() -> dict:
+        return {**system.check_update(), "version": system.version()}
+
+    @app.post("/api/app/update")
+    def update_apply() -> dict:
+        reasons = busy_reasons()
+        if reasons:
+            raise HTTPException(409, f"{reasons[0]}. 끝난 뒤에 업데이트해 주세요.")
+        result = system.apply_update()
+        if not result["ok"]:
+            raise HTTPException(500, result["message"])
+        log.info("업데이트 완료, 다시 시작: %s", result["version"])
+        system.restart_soon()
+        return {**result, "restarting": True}
+
+    @app.post("/api/app/logs")
+    def save_logs() -> dict:
+        stats: dict = {}
+        for r in db.list_recordings():
+            stats[r["status"]] = stats.get(r["status"], 0) + 1
+        path = system.export_logs(data_dir, stats, dest_dir=app.state.log_export_dir)
+        if app.state.reveal_files:
+            subprocess.run(["open", "-R", str(path)], check=False)  # Finder 에서 파일 보여주기
+        return {"path": str(path), "name": path.name}
 
     @app.get("/api/recordings")
     def list_recordings() -> list[dict]:

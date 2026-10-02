@@ -329,6 +329,29 @@ a { color: var(--accent); text-decoration: none; }
 .hit-speaker { font-size: 13px; margin-right: 4px; }
 mark { background: color-mix(in srgb, var(--warn) 28%, transparent); color: inherit; border-radius: 3px; padding: 0 1px; }
 
+/* ---------- 앱 관리 ---------- */
+.icon-btn-lg { width: 36px; height: 36px; font-size: 18px; border-radius: 999px; }
+.icon-btn-lg:hover { color: var(--text); }
+.banner {
+  position: sticky; top: 61px; z-index: 9; padding: 10px 20px; text-align: center; font-size: 14px;
+  background: var(--warn-soft); color: var(--warn); border-bottom: 1px solid color-mix(in srgb, var(--warn) 30%, transparent);
+}
+.overlay { position: fixed; inset: 0; z-index: 70; display: grid; place-items: center; padding: 20px; background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(6px); }
+.overlay-card { max-width: 420px; text-align: center; }
+.overlay-icon { font-size: 44px; margin-bottom: 6px; }
+.overlay-card h2 { margin: 0 0 8px; font-size: 22px; }
+.overlay-card p { margin: 0; color: var(--text-2); line-height: 1.7; }
+.confirm-text { margin: 0 0 18px; line-height: 1.6; }
+.change-list { margin: 8px 0 10px; padding-left: 20px; color: var(--text-2); font-size: 14px; }
+.guide { width: min(440px, calc(100% - 32px)); text-align: center; padding: 28px 26px 22px; }
+.guide-icon { font-size: 46px; }
+.guide h2 { margin: 6px 0 10px; font-size: 21px; }
+.guide p { margin: 0 0 18px; color: var(--text-2); line-height: 1.75; }
+.guide-dots { display: flex; justify-content: center; gap: 6px; margin-bottom: 16px; }
+.guide-dots span { width: 7px; height: 7px; border-radius: 50%; background: var(--border); }
+.guide-dots span.on { background: var(--accent); width: 18px; border-radius: 4px; }
+.guide .dialog-actions { justify-content: space-between; }
+
 /* ---------- 기타 ---------- */
 .drop-overlay {
   position: fixed; inset: 0; z-index: 50; display: grid; place-items: center;

@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>까치녹음기</title>
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🐦‍⬛</text></svg>">
+  <link rel="icon" href="icon.png"><text y='.9em' font-size='90'>🐦‍⬛</text></svg>">
   <link rel="stylesheet" href="app.css">
 </head>
 <body>
@@ -20,8 +20,13 @@
     <nav class="topbar-actions">
       <button class="btn btn-ghost btn-record" id="btn-record"><span class="rec-dot"></span>녹음하기</button>
       <button class="btn btn-primary" id="btn-upload">파일 올리기</button>
+      <button class="icon-btn icon-btn-lg" id="btn-settings" aria-label="설정" title="설정">⚙</button>
     </nav>
   </header>
+
+  <div class="banner" id="offline-banner" hidden>
+    앱과 연결이 끊겼어요. Dock의 <b>까치녹음기</b>를 눌러 다시 켜주세요. 켜지면 저절로 이어져요.
+  </div>
 
   <main id="view" class="container" aria-live="polite"></main>
 
@@ -33,9 +38,26 @@
 
   <div class="toast-stack" id="toasts" role="status"></div>
 
+  <div class="overlay" id="overlay" hidden>
+    <div class="overlay-card">
+      <div class="overlay-icon" id="overlay-icon"></div>
+      <h2 id="overlay-title"></h2>
+      <p id="overlay-text"></p>
+    </div>
+  </div>
+
+  <dialog id="guide-dialog" class="dialog guide">
+    <div class="guide-steps" id="guide-steps"></div>
+    <div class="guide-dots" id="guide-dots"></div>
+    <div class="dialog-actions">
+      <button type="button" class="btn btn-ghost" id="guide-prev">이전</button>
+      <button type="button" class="btn btn-primary" id="guide-next">다음</button>
+    </div>
+  </dialog>
+
   <dialog id="confirm-dialog" class="dialog">
     <form method="dialog">
-      <p id="confirm-text"></p>
+      <div id="confirm-text" class="confirm-text"></div>
       <div class="dialog-actions">
         <button type="button" class="btn btn-ghost" id="confirm-cancel">취소</button>
         <button type="button" class="btn btn-danger" id="confirm-ok">삭제</button>

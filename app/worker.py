@@ -21,6 +21,9 @@ from app.db import Database
 
 log = logging.getLogger(__name__)
 
+# 이만큼 아무 일도 없으면 모델을 메모리에서 내린다 (다음 작업 때 몇 초 걸려 다시 올림)
+IDLE_UNLOAD_SECONDS = 15 * 60
+
 INTERRUPTED_MESSAGE = "처리 중에 앱이 꺼져서 멈췄어요. [다시 시도]를 눌러주세요."
 
 # 단계별 전체 진행률 비중 (합 1.0). 10분 녹음 실측 시간 비율 기준.
@@ -76,6 +79,10 @@ class Worker:
         self._audio_cache: tuple[Optional[str], object] = (None, None)
 
     @property
+    def busy(self) -> bool:
+        return self._queue.unfinished_tasks > 0
+
+    @property
     def pipeline(self):
         if self._pipeline is None:
             self._pipeline = self._pipeline_factory()
@@ -123,8 +130,15 @@ class Worker:
     # ---- 처리 ----
 
     def _run(self) -> None:
+        last_work = time.time()
         while True:
-            task = self._queue.get()
+            try:
+                task = self._queue.get(timeout=60)
+            except queue.Empty:
+                if self._pipeline is not None and time.time() - last_work > IDLE_UNLOAD_SECONDS:
+                    self._unload()
+                continue
+            last_work = time.time()
             try:
                 if task is None:
                     return
@@ -170,6 +184,20 @@ class Worker:
         finally:
             if caffeinate:
                 caffeinate.terminate()
+
+    def _unload(self) -> None:
+        """한동안 안 쓰면 모델(약 4GB)을 내려서 다른 앱이 메모리를 쓸 수 있게 한다."""
+        import gc
+
+        log.info("한동안 작업이 없어 모델을 메모리에서 내립니다")
+        self._pipeline = None
+        self._audio_cache = (None, None)
+        gc.collect()
+        try:
+            import mlx.core as mx
+            mx.clear_cache()
+        except Exception:
+            pass
 
     def _load_audio(self, rec: dict):
         if self._audio_cache[0] == rec["id"]:

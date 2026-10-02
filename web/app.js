@@ -37,10 +37,12 @@ function toast(msg, kind = "") {
   setTimeout(() => el.remove(), kind === "error" ? 6000 : 3000);
 }
 
-function confirmDialog(text, okLabel = "삭제") {
+function confirmDialog(text, okLabel = "삭제", { html = false, primary = false, cancelLabel = "취소" } = {}) {
   const dlg = $("#confirm-dialog");
-  $("#confirm-text").textContent = text;
+  $("#confirm-text")[html ? "innerHTML" : "textContent"] = text;
   $("#confirm-ok").textContent = okLabel;
+  $("#confirm-ok").className = `btn ${primary ? "btn-primary" : "btn-danger"}`;
+  $("#confirm-cancel").textContent = cancelLabel;
   dlg.showModal();
   // 'close' 이벤트는 창이 가려져 있으면 늦게 오거나 안 와서 버튼 클릭을 직접 받는다
   return new Promise((resolve) => {
@@ -1274,18 +1276,147 @@ async function finishInterrupted(id) {
   }
 }
 
+/* ---------- 앱 관리: 설정 메뉴 / 업데이트 / 종료 / 로그 / 첫 실행 안내 ---------- */
+
+const appState = { closed: false, updating: false, failures: 0, version: null };
+
+function showOverlay(icon, title, text) {
+  $("#overlay-icon").textContent = icon;
+  $("#overlay-title").textContent = title;
+  $("#overlay-text").innerHTML = text;
+  $("#overlay").hidden = false;
+}
+
+async function settingsMenu(anchor) {
+  let info = null;
+  try { info = await api("/api/app"); } catch {}
+  const v = info?.version;
+  const vLabel = v?.commit ? `버전 ${v.commit} · ${new Date(v.date).toLocaleDateString("ko-KR", { month: "long", day: "numeric" })}` : "버전 정보 없음";
+  openMenu(anchor, [
+    { label: "업데이트 확인", icon: "↻", run: checkUpdate },
+    { label: "사용법 보기", icon: "?", run: () => showGuide(0) },
+    { label: "문제 신고용 로그 저장", icon: "🧾", run: saveLogs },
+    "-",
+    { label: vLabel, icon: "ⓘ", disabled: true, run: () => {} },
+    { label: "까치녹음기 끄기", icon: "⏻", danger: true, run: quitApp },
+  ]);
+}
+
+async function checkUpdate() {
+  toast("새 버전이 있는지 확인하는 중…");
+  let r;
+  try { r = await api("/api/app/update"); } catch (err) { toast(err.message, "error"); return; }
+  if (r.available === null) { toast(r.message, "error"); return; }
+  if (!r.available) { toast("지금이 최신 버전이에요."); return; }
+  const list = r.changes.map((c) => `<li>${esc(c)}</li>`).join("");
+  const ok = await confirmDialog(
+    `<b>새 버전이 있어요.</b><ul class="change-list">${list}</ul><span class="field-hint">업데이트하면 앱이 잠깐 다시 시작돼요. 1~2분쯤 걸릴 수 있어요.</span>`,
+    "지금 업데이트", { html: true, primary: true, cancelLabel: "나중에" });
+  if (ok) applyUpdate();
+}
+
+async function applyUpdate() {
+  if (recorder.phase !== "idle") { toast("녹음을 먼저 끝내주세요.", "error"); return; }
+  appState.updating = true;
+  showOverlay("↻", "업데이트하는 중", "1~2분쯤 걸릴 수 있어요.<br>이 창을 닫지 말고 기다려 주세요.");
+  try {
+    await api("/api/app/update", { method: "POST" });
+  } catch (err) {
+    appState.updating = false;
+    $("#overlay").hidden = true;
+    toast(err.message, "error");
+    return;
+  }
+  // 서버가 새 코드로 다시 켜질 때까지 기다렸다가 화면을 새로 고친다
+  await new Promise((r) => setTimeout(r, 2000));
+  for (let i = 0; i < 180; i++) {
+    try {
+      const res = await fetch("/api/health", { cache: "no-store" });
+      if (res.ok) { location.reload(); return; }
+    } catch {}
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  showOverlay("⚠", "다시 켜지지 않았어요", "Dock의 <b>까치녹음기</b>를 눌러 직접 켜주세요.");
+}
+
+async function saveLogs() {
+  try {
+    const r = await api("/api/app/logs", { method: "POST" });
+    toast(`바탕화면에 '${r.name}' 파일을 만들었어요. 이 파일을 보내주세요.`);
+  } catch (err) { toast(err.message, "error"); }
+}
+
+async function quitApp() {
+  if (recorder.phase !== "idle") { toast("녹음을 먼저 끝내주세요.", "error"); return; }
+  let busy = [];
+  try { busy = (await api("/api/app")).busy; } catch {}
+  const msg = busy.length
+    ? `${busy[0]}. 지금 끄면 그 녹음은 나중에 [다시 시도]를 눌러야 해요. 그래도 끌까요?`
+    : "까치녹음기를 끌까요? 다시 쓰려면 Dock의 까치녹음기를 누르면 돼요.";
+  if (!(await confirmDialog(msg, "끄기"))) return;
+  try { await api("/api/app/quit", { method: "POST" }); } catch {}
+  appState.closed = true;
+  clearTimeout(state.pollTimer);
+  showOverlay("🐦‍⬛", "까치녹음기를 껐어요", "이 탭은 닫아도 돼요.<br>다시 쓰려면 Dock의 <b>까치녹음기</b>를 누르세요.");
+}
+
+const GUIDE = [
+  { icon: "🎙️", title: "강의 녹음하기",
+    text: "강의가 시작되면 위의 <b>● 녹음하기</b>를 누르세요.<br>10초마다 저장돼서 중간에 창이 꺼져도 괜찮아요.<br><b>맥북 뚜껑은 닫지 마세요.</b> 녹음이 멈춰요." },
+  { icon: "📁", title: "녹음 파일 올리기",
+    text: "휴대폰으로 녹음한 파일도 화면에 <b>끌어다 놓으면</b> 돼요.<br>받아쓰기는 인터넷 없이 이 맥에서 해요.<br>1시간 강의에 5~10분쯤 걸려요." },
+  { icon: "✏️", title: "고치고 찾기",
+    text: "<b>화자 1</b>을 눌러 '교수님'처럼 이름을 바꿀 수 있어요.<br>틀린 문장은 <b>두 번 눌러</b> 고치고,<br>위 검색창으로 모든 강의에서 찾을 수 있어요." },
+];
+let guideStep = 0;
+
+function showGuide(step = 0) {
+  guideStep = step;
+  renderGuide();
+  const dlg = $("#guide-dialog");
+  if (!dlg.open) dlg.showModal();
+}
+
+function renderGuide() {
+  const g = GUIDE[guideStep];
+  $("#guide-steps").innerHTML = `<div class="guide-icon">${g.icon}</div><h2>${g.title}</h2><p>${g.text}</p>`;
+  $("#guide-dots").innerHTML = GUIDE.map((_, i) => `<span class="${i === guideStep ? "on" : ""}"></span>`).join("");
+  $("#guide-prev").style.visibility = guideStep ? "visible" : "hidden";
+  $("#guide-next").textContent = guideStep === GUIDE.length - 1 ? "시작하기" : "다음";
+}
+
+$("#guide-prev").addEventListener("click", () => { guideStep = Math.max(0, guideStep - 1); renderGuide(); });
+$("#guide-next").addEventListener("click", () => {
+  if (guideStep < GUIDE.length - 1) { guideStep++; renderGuide(); return; }
+  $("#guide-dialog").close();
+  try { localStorage.setItem("kkachi.guide.v1", "seen"); } catch {}
+});
+$("#guide-dialog").addEventListener("cancel", () => { try { localStorage.setItem("kkachi.guide.v1", "seen"); } catch {} });
+
+function maybeShowGuide() {
+  let seen = false;
+  try { seen = localStorage.getItem("kkachi.guide.v1") === "seen"; } catch {}
+  if (!seen) showGuide(0);
+}
+
+$("#btn-settings").addEventListener("click", (e) => { e.stopPropagation(); settingsMenu(e.currentTarget); });
+
 /* ---------- 상태 갱신 ---------- */
 
 async function refresh() {
   clearTimeout(state.pollTimer);
+  if (appState.closed) return;
   try {
     state.recordings = await api("/api/recordings");
     renderList();
+    appState.failures = 0;
+    $("#offline-banner").hidden = true;
   } catch {
-    // 서버가 잠깐 바쁠 수 있음. 다음 주기에 다시 시도
+    // 서버가 잠깐 바쁠 수 있음. 두 번 연속 실패하면 꺼진 걸로 보고 안내
+    if (++appState.failures >= 2 && !appState.updating) $("#offline-banner").hidden = false;
   }
   const busy = state.recordings.some((r) => isWorking(r) || r.status === "recording");
-  state.pollTimer = setTimeout(refresh, busy ? 1000 : 5000);
+  state.pollTimer = setTimeout(refresh, busy || appState.failures ? 1000 : 5000);
 }
 
 async function loadSubjects() {
@@ -1321,3 +1452,4 @@ window.addEventListener("drop", (e) => {
 
 loadSubjects();
 route();
+maybeShowGuide();

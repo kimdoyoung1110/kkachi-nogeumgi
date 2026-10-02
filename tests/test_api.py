@@ -383,3 +383,33 @@ def test_export_endpoints(make_client):
         r = client.get(f"/api/recordings/{d['id']}/export", params={"format": "txt", "download": "false"})
         assert "content-disposition" not in r.headers and "[00:00] 화자 1" in r.text
         assert client.get(f"/api/recordings/{d['id']}/export", params={"format": "pdf"}).status_code == 400
+
+
+# ---- 앱 관리 ----
+
+def test_app_info_and_busy_blocks_update(make_client, monkeypatch):
+    from app import system
+    client, app = make_client(FakePipeline())
+    with client:
+        info = client.get("/api/app").json()
+        assert info["busy"] == [] and "commit" in info["version"]
+        client.post("/api/live")  # 녹음 중
+        assert client.get("/api/app").json()["busy"] == ["녹음 중이에요"]
+        called = []
+        monkeypatch.setattr(system, "apply_update", lambda: called.append(1))
+        r = client.post("/api/app/update")
+        assert r.status_code == 409 and "녹음 중" in r.json()["detail"] and not called
+
+
+def test_quit_and_logs(make_client, monkeypatch, tmp_path):
+    from app import system
+    client, app = make_client(FakePipeline())
+    quits = []
+    monkeypatch.setattr(system, "shutdown_soon", lambda: quits.append(1))
+    app.state.log_export_dir = tmp_path / "desk"
+    app.state.reveal_files = False
+    with client:
+        assert client.get("/api/health").json()["app"] == "kkachi"
+        assert client.post("/api/app/quit").json() == {"ok": True} and quits == [1]
+        r = client.post("/api/app/logs").json()
+        assert r["name"].startswith("까치녹음기-로그-") and (tmp_path / "desk" / r["name"]).exists()
