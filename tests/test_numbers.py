@@ -11,10 +11,10 @@ def test_parse_sino():
     assert parse_sino("이삼") is None
 
 
-def test_normalize_from_real_meeting():
+def test_normalize():
     assert normalize_numbers("칠천오백 개?") == "7500개?"
-    assert normalize_numbers("하이 백팔십 개 되던데") == "하이 180개 되던데"
-    assert normalize_numbers("팔월 이십사일이 마지막이거든") == "8월 24일이 마지막이거든"
+    assert normalize_numbers("벌써 백팔십 개 했던데") == "벌써 180개 했던데"
+    assert normalize_numbers("팔월 이십사일이 마감이야") == "8월 24일이 마감이야"
     assert normalize_numbers("시월 삼일") == "10월 삼일"  # 십 없는 한 글자 날짜는 그대로 (삼일절 등과 헷갈림)
     assert normalize_numbers("오십 퍼센트") == "50퍼센트"
     assert normalize_numbers("십오분마다") == "15분마다"

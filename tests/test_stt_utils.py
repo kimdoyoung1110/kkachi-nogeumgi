@@ -20,13 +20,14 @@ def test_parse_language_forced_has_no_prefix():
     assert parse_language("안녕하세요", "ko") == ("ko", "안녕하세요")
 
 
-REAL_LOOP = "이거 일회용 그거야? 그러면. " + "그냥 뭐 아니 이미지는 달라고 해야지. 이거 만든 거야? " * 40
+# 30자 안팎의 문장이 수십 번 반복되는 루프 (실제 녹음에서 겪은 형태를 흉내낸 예시)
+REAL_LOOP = "그럼 이건 다음 주에 보자. " + "근데 그 자료는 따로 받아야 하지 않아? 그거 누가 만든 거야? " * 40
 
 
 def test_looks_repetitive():
     assert looks_repetitive("네 " * 30)
     assert looks_repetitive("감사합니다. " * 8)
-    assert looks_repetitive(REAL_LOOP)  # 실제 회의에서 나온 30자 단위 루프
+    assert looks_repetitive(REAL_LOOP)  # 30자 단위 루프
     assert not looks_repetitive("오늘은 해시 테이블에 대해 배워보겠습니다. 해시 함수는 키를 인덱스로 바꿉니다.")
     assert not looks_repetitive("아. 오케이 오케이 오케이. 그럼 그렇게 하자.")
     # 30초 구간에서 1,000자는 말이 안 됨
@@ -39,7 +40,7 @@ def test_looks_repetitive():
 
 def test_collapse_repeats():
     out = collapse_repeats(REAL_LOOP)
-    assert out.count("이미지는 달라고 해야지") == 1 and out.startswith("이거 일회용")
+    assert out.count("따로 받아야 하지 않아") == 1 and out.startswith("그럼 이건")
     assert collapse_repeats("네 네 네 알겠습니다") == "네 네 네 알겠습니다"
 
 
