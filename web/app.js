@@ -101,38 +101,12 @@ function renderHome() {
   refresh();
 }
 
-function renderUploadArea() {
-  const area = $("#upload-area");
-  if (!area) return;
-  if (!state.pendingFile) {
-    area.innerHTML = `
-      <div class="dropzone" id="dropzone" role="button" tabindex="0">
-        <div class="dropzone-icon">🎧</div>
-        <div class="dropzone-title">녹음 파일을 끌어다 놓거나 눌러서 고르세요</div>
-        <div class="dropzone-sub">m4a · mp3 · wav · 영상 파일도 돼요. 2시간 강의도 괜찮아요.</div>
-      </div>`;
-    const dz = $("#dropzone");
-    dz.addEventListener("click", pickFile);
-    dz.addEventListener("keydown", (e) => (e.key === "Enter" || e.key === " ") && pickFile());
-    return;
-  }
-
-  const f = state.pendingFile;
+function optionsFieldsHTML(defaultTitle) {
   const subjectOptions = state.subjects.map((s) => `<option value="${esc(s.name)}">`).join("");
-  area.innerHTML = `
-    <form class="card upload-form" id="upload-form" novalidate>
-      <div class="upload-file">
-        <span class="upload-file-icon">🎵</span>
-        <div>
-          <div class="upload-file-name">${esc(f.name)}</div>
-          <div class="upload-file-meta">${fmtBytes(f.size)}</div>
-        </div>
-        <button type="button" class="btn-link btn" id="change-file">다른 파일</button>
-      </div>
-
+  return `
       <label class="field">
         <span class="field-label">제목</span>
-        <input class="input" name="title" value="${esc(f.name.replace(/\.[^.]+$/, ""))}" maxlength="120">
+        <input class="input" name="title" value="${esc(defaultTitle)}" maxlength="120">
       </label>
 
       <div class="field">
@@ -176,8 +150,46 @@ function renderUploadArea() {
             <span class="field-hint">자꾸 잘못 적히는 단어를 한 줄에 하나씩 <b>틀린 말 = 바른 말</b>로 적으면 고쳐줘요.</span>
           </label>
         </div>
-      </details>
+      </details>`;
+}
 
+const OPTION_FIELDS = ["title", "language", "num_speakers", "subject", "hotwords", "replacements"];
+
+function appendOptions(fd, form) {
+  for (const name of OPTION_FIELDS) fd.append(name, form.elements[name].value);
+}
+
+function renderUploadArea() {
+  const area = $("#upload-area");
+  if (!area) return;
+  if (recorder.phase === "recording" || recorder.phase === "stopping") return renderRecordingPanel(area);
+  if (recorder.phase === "finished") return renderRecordedForm(area);
+
+  if (!state.pendingFile) {
+    area.innerHTML = `
+      <div class="dropzone" id="dropzone" role="button" tabindex="0">
+        <div class="dropzone-icon">🎧</div>
+        <div class="dropzone-title">녹음 파일을 끌어다 놓거나 눌러서 고르세요</div>
+        <div class="dropzone-sub">m4a · mp3 · wav · 영상 파일도 돼요. 2시간 강의도 괜찮아요. 바로 녹음하려면 위의 <b>● 녹음하기</b>를 누르세요.</div>
+      </div>`;
+    const dz = $("#dropzone");
+    dz.addEventListener("click", pickFile);
+    dz.addEventListener("keydown", (e) => (e.key === "Enter" || e.key === " ") && pickFile());
+    return;
+  }
+
+  const f = state.pendingFile;
+  area.innerHTML = `
+    <form class="card upload-form" id="upload-form" novalidate>
+      <div class="upload-file">
+        <span class="upload-file-icon">🎵</span>
+        <div>
+          <div class="upload-file-name">${esc(f.name)}</div>
+          <div class="upload-file-meta">${fmtBytes(f.size)}</div>
+        </div>
+        <button type="button" class="btn-link btn" id="change-file">다른 파일</button>
+      </div>
+      ${optionsFieldsHTML(f.name.replace(/\.[^.]+$/, ""))}
       <div class="form-actions">
         <div class="upload-bar" id="upload-bar" hidden><div></div></div>
         <button type="button" class="btn btn-ghost" id="cancel-upload">취소</button>
@@ -211,6 +223,7 @@ function acceptFile(file) {
   if (!file) return;
   const ok = /^(audio|video)\//.test(file.type) || /\.(m4a|mp3|wav|webm|mp4|aac|ogg|flac|mov|caf)$/i.test(file.name);
   if (!ok) { toast("소리 파일이 아닌 것 같아요. m4a, mp3, wav 같은 파일을 골라주세요.", "error"); return; }
+  if (recorder.phase !== "idle") { toast("녹음을 먼저 끝내주세요.", "error"); return; }
   if (location.hash.startsWith("#/r/")) location.hash = "#/";
   state.pendingFile = file;
   renderUploadArea();
@@ -221,9 +234,7 @@ function submitUpload(form) {
   if (state.uploading) return;
   const fd = new FormData();
   fd.append("file", state.pendingFile);
-  for (const name of ["title", "language", "num_speakers", "subject", "hotwords", "replacements"]) {
-    fd.append(name, form.elements[name].value);
-  }
+  appendOptions(fd, form);
 
   state.uploading = true;
   const btn = $("#submit-upload");
@@ -264,6 +275,11 @@ function submitUpload(form) {
 }
 
 function statusChip(r) {
+  if (r.status === "recording") {
+    return r.id === recorder.id || !r.stalled
+      ? `<span class="chip chip-live"><span class="dot"></span>녹음 중</span>`
+      : `<span class="chip chip-failed"><span class="dot"></span>끊김</span>`;
+  }
   if (r.status === "done") return `<span class="chip chip-done"><span class="dot"></span>완료</span>`;
   if (r.status === "failed") return `<span class="chip chip-failed"><span class="dot"></span>실패</span>`;
   if (r.status === "queued") return `<span class="chip chip-queued"><span class="dot"></span>대기 중</span>`;
@@ -284,6 +300,8 @@ function recItemHTML(r) {
       <div class="rec-progress-top"><span class="stage">${esc(r.stage_label)}${r.status === "processing" ? "…" : ""}</span><span class="pct">${r.status === "processing" ? pct + "%" : ""}</span></div>
       <div class="bar ${r.status === "queued" ? "indeterminate" : ""}"><div style="width:${pct}%"></div></div>
     </div>` : "";
+  const interrupted = r.status === "recording" && r.stalled && r.id !== recorder.id ? `
+    <div class="rec-error"><span>녹음이 중간에 끊겼어요. 저장된 부분까지 받아쓸 수 있어요.</span><button class="btn btn-sm btn-ghost" data-action="finish-interrupted">여기까지 받아쓰기</button></div>` : "";
   const error = r.status === "failed" ? `
     <div class="rec-error"><span>${esc(r.error)}</span><button class="btn btn-sm btn-ghost" data-action="retry">다시 시도</button></div>` : "";
 
@@ -297,7 +315,7 @@ function recItemHTML(r) {
         ${statusChip(r)}
         <button class="icon-btn" data-action="delete" title="삭제" aria-label="삭제">✕</button>
       </div>
-      ${progress}${error}
+      ${progress}${error}${interrupted}
     </article>`;
 }
 
@@ -352,10 +370,13 @@ $("#view").addEventListener("click", async (e) => {
 
   if (action === "delete") {
     const r = state.recordings.find((x) => x.id === id);
+    if (id === recorder.id) { toast("지금 녹음 중인 항목은 녹음을 끝낸 뒤 지울 수 있어요.", "error"); return; }
     const ok = await confirmDialog(`'${r?.title ?? "이 녹음"}'을(를) 삭제할까요? 녹음 파일과 받아쓴 내용이 모두 지워져요.`);
     if (!ok) return;
     try { await api(`/api/recordings/${id}`, { method: "DELETE" }); toast("삭제했어요."); refresh(); }
     catch (err) { toast(err.message, "error"); }
+  } else if (action === "finish-interrupted") {
+    finishInterrupted(id);
   } else if (action === "retry") {
     try { await api(`/api/recordings/${id}/retry`, { method: "POST" }); refresh(); }
     catch (err) { toast(err.message, "error"); }
@@ -406,6 +427,314 @@ async function renderDetail(id) {
   });
 }
 
+/* ---------- 브라우저 녹음 ---------- */
+
+const CHUNK_MS = 10_000;  // 10초마다 서버에 저장 → 브라우저가 꺼져도 그때까지는 남는다
+
+const recorder = {
+  phase: "idle",          // idle → recording → stopping → finished → idle
+  id: null,
+  title: "",
+  media: null,
+  stream: null,
+  audioCtx: null,
+  analyser: null,
+  seq: 0,
+  queue: [],
+  sending: false,
+  offline: false,
+  elapsedMs: 0,
+  resumedAt: 0,
+  paused: false,
+  tick: null,
+  raf: null,
+};
+
+function pickMime() {
+  const candidates = [
+    ["audio/webm;codecs=opus", "webm"],
+    ["audio/webm", "webm"],
+    ["audio/mp4", "mp4"],
+    ["audio/ogg;codecs=opus", "ogg"],
+  ];
+  for (const [mime, container] of candidates) {
+    if (window.MediaRecorder && MediaRecorder.isTypeSupported(mime)) return { mime, container };
+  }
+  return null;
+}
+
+function defaultRecordTitle() {
+  const d = new Date();
+  const t = d.toLocaleTimeString("ko-KR", { hour: "numeric", minute: "2-digit" });
+  return `녹음 ${d.getMonth() + 1}월 ${d.getDate()}일 ${t}`;
+}
+
+function elapsed() {
+  return recorder.elapsedMs + (recorder.paused || !recorder.resumedAt ? 0 : Date.now() - recorder.resumedAt);
+}
+
+async function startRecording() {
+  if (recorder.phase !== "idle") return;
+  if (state.pendingFile) { toast("올리던 파일을 먼저 처리하거나 취소해 주세요.", "error"); return; }
+  const fmt = pickMime();
+  if (!navigator.mediaDevices?.getUserMedia || !fmt) {
+    toast("이 브라우저에서는 녹음을 할 수 없어요. 크롬이나 사파리에서 열어주세요.", "error");
+    return;
+  }
+
+  let stream;
+  try {
+    // 강의실 먼 소리도 살리도록 잡음 제거·에코 제거는 끄고, 소리 크기 자동 조절만 켠다
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: true },
+    });
+  } catch (err) {
+    const denied = err && (err.name === "NotAllowedError" || err.name === "SecurityError");
+    toast(denied
+      ? "마이크를 쓸 수 없어요. 브라우저 주소창의 마이크 권한을 허용하고, 시스템 설정 › 개인정보 보호 및 보안 › 마이크에서 브라우저를 켜주세요."
+      : "마이크를 찾을 수 없어요. 마이크가 연결돼 있는지 확인해 주세요.", "error");
+    return;
+  }
+
+  const title = defaultRecordTitle();
+  let rec;
+  try {
+    const fd = new FormData();
+    fd.append("title", title);
+    fd.append("container", fmt.container);
+    rec = await api("/api/live", { method: "POST", body: fd });
+  } catch (err) {
+    stream.getTracks().forEach((t) => t.stop());
+    toast(err.message, "error");
+    return;
+  }
+
+  Object.assign(recorder, {
+    phase: "recording", id: rec.id, title, stream, seq: 0, queue: [], offline: false,
+    elapsedMs: 0, resumedAt: Date.now(), paused: false,
+  });
+
+  const media = new MediaRecorder(stream, { mimeType: fmt.mime, audioBitsPerSecond: 64000 });
+  media.ondataavailable = (e) => { if (e.data && e.data.size) enqueueChunk(e.data); };
+  media.onerror = () => toast("녹음 중에 문제가 생겼어요. 지금까지 녹음된 부분은 저장돼 있어요.", "error");
+  media.start(CHUNK_MS);
+  recorder.media = media;
+
+  setupLevelMeter(stream);
+  window.addEventListener("beforeunload", warnBeforeUnload);
+  if (location.hash.startsWith("#/r/")) location.hash = "#/";
+  else renderUploadArea();
+  recorder.tick = setInterval(updateRecordingPanel, 250);
+  refresh();
+}
+
+function warnBeforeUnload(e) {
+  e.preventDefault();
+  e.returnValue = "";  // 브라우저 기본 경고창: "사이트에서 나가시겠습니까?"
+}
+
+function setupLevelMeter(stream) {
+  try {
+    recorder.audioCtx = new AudioContext();
+    const src = recorder.audioCtx.createMediaStreamSource(stream);
+    recorder.analyser = recorder.audioCtx.createAnalyser();
+    recorder.analyser.fftSize = 1024;
+    src.connect(recorder.analyser);
+  } catch {
+    recorder.analyser = null;
+  }
+  const buf = new Float32Array(1024);
+  const draw = () => {
+    const meter = $("#level-meter > div");
+    if (meter && recorder.analyser) {
+      recorder.analyser.getFloatTimeDomainData(buf);
+      let sum = 0;
+      for (const v of buf) sum += v * v;
+      const db = 20 * Math.log10(Math.sqrt(sum / buf.length) + 1e-8);
+      const level = recorder.paused ? 0 : Math.max(0, Math.min(1, (db + 60) / 50));
+      meter.style.width = `${level * 100}%`;
+    }
+    if (recorder.phase === "recording") recorder.raf = requestAnimationFrame(draw);
+  };
+  draw();
+}
+
+function enqueueChunk(blob) {
+  recorder.queue.push({ seq: recorder.seq++, blob });
+  pumpChunks();
+}
+
+async function pumpChunks() {
+  if (recorder.sending) return;
+  recorder.sending = true;
+  const id = recorder.id;
+  while (recorder.queue.length && recorder.id === id) {
+    const { seq, blob } = recorder.queue[0];
+    try {
+      const res = await fetch(`/api/live/${id}/chunks/${seq}`, { method: "PUT", body: blob });
+      if (res.status === 409 || res.status === 404) { recorder.queue = []; break; }  // 이미 끝났거나 삭제됨
+      if (!res.ok) throw new Error(String(res.status));
+      recorder.queue.shift();
+      recorder.offline = false;
+    } catch {
+      // 앱이 잠깐 바쁘거나 꺼졌다 켜진 경우: 조각은 메모리에 들고 있다가 다시 보낸다
+      recorder.offline = true;
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+  }
+  recorder.sending = false;
+}
+
+function togglePause() {
+  const m = recorder.media;
+  if (!m) return;
+  if (recorder.paused) {
+    m.resume();
+    recorder.paused = false;
+    recorder.resumedAt = Date.now();
+  } else {
+    m.pause();
+    recorder.elapsedMs = elapsed();
+    recorder.paused = true;
+  }
+  updateRecordingPanel();
+}
+
+async function stopRecording() {
+  if (recorder.phase !== "recording") return;
+  recorder.elapsedMs = elapsed();
+  recorder.paused = true;
+  recorder.phase = "stopping";
+  renderUploadArea();
+
+  await new Promise((resolve) => {
+    recorder.media.addEventListener("stop", resolve, { once: true });
+    recorder.media.stop();  // 마지막 조각이 ondataavailable 로 한 번 더 온다
+  });
+  cleanupMedia();
+  // 남은 조각을 다 보낼 때까지 기다린다
+  while (recorder.queue.length || recorder.sending) await new Promise((r) => setTimeout(r, 200));
+
+  recorder.phase = "finished";
+  renderUploadArea();
+}
+
+function cleanupMedia() {
+  clearInterval(recorder.tick);
+  cancelAnimationFrame(recorder.raf);
+  recorder.stream?.getTracks().forEach((t) => t.stop());
+  recorder.audioCtx?.close().catch(() => {});
+  Object.assign(recorder, { stream: null, media: null, audioCtx: null, analyser: null });
+}
+
+function resetRecorder() {
+  cleanupMedia();
+  window.removeEventListener("beforeunload", warnBeforeUnload);
+  Object.assign(recorder, { phase: "idle", id: null, queue: [], seq: 0, elapsedMs: 0, paused: false });
+  renderUploadArea();
+}
+
+function renderRecordingPanel(area) {
+  const stopping = recorder.phase === "stopping";
+  area.innerHTML = `
+    <section class="card rec-panel" aria-label="녹음 중">
+      <div class="rec-panel-top">
+        <span class="rec-live ${recorder.paused ? "paused" : ""}" id="rec-live">${stopping ? "저장 중" : recorder.paused ? "일시정지" : "녹음 중"}</span>
+        <span class="rec-saved" id="rec-saved"></span>
+      </div>
+      <div class="rec-timer" id="rec-timer">${fmtClock(elapsed() / 1000)}</div>
+      <div class="level" id="level-meter" aria-hidden="true"><div></div></div>
+      <div class="rec-actions">
+        <button class="btn btn-ghost btn-lg" id="btn-pause" ${stopping ? "disabled" : ""}>${recorder.paused ? "▶ 계속" : "❚❚ 일시정지"}</button>
+        <button class="btn btn-danger btn-lg" id="btn-stop" ${stopping ? "disabled" : ""}>■ 녹음 끝내기</button>
+      </div>
+      <ul class="rec-tips">
+        <li>맥북 뚜껑을 닫으면 녹음이 멈춰요. 긴 강의는 충전기를 연결해 두세요.</li>
+        <li>이 창을 닫아도 그때까지 녹음된 부분은 저장돼요.</li>
+      </ul>
+    </section>`;
+  $("#btn-pause").addEventListener("click", togglePause);
+  $("#btn-stop").addEventListener("click", stopRecording);
+  updateRecordingPanel();
+}
+
+function updateRecordingPanel() {
+  const timer = $("#rec-timer");
+  if (!timer) return;
+  timer.textContent = fmtClock(elapsed() / 1000);
+  const live = $("#rec-live");
+  if (recorder.phase === "recording") {
+    live.textContent = recorder.paused ? "일시정지" : "녹음 중";
+    live.classList.toggle("paused", recorder.paused);
+    $("#btn-pause").textContent = recorder.paused ? "▶ 계속" : "❚❚ 일시정지";
+  }
+  const saved = $("#rec-saved");
+  saved.textContent = recorder.offline
+    ? "⚠ 앱과 연결이 끊겨서 다시 시도 중이에요"
+    : recorder.seq ? `${fmtClock((recorder.seq - recorder.queue.length) * CHUNK_MS / 1000)}까지 안전하게 저장됨` : "";
+  saved.classList.toggle("warn", recorder.offline);
+}
+
+function renderRecordedForm(area) {
+  area.innerHTML = `
+    <form class="card upload-form" id="finish-form" novalidate>
+      <div class="upload-file">
+        <span class="upload-file-icon">🎙️</span>
+        <div>
+          <div class="upload-file-name">녹음 완료</div>
+          <div class="upload-file-meta">${fmtDuration(recorder.elapsedMs / 1000)}</div>
+        </div>
+        <button type="button" class="btn-link btn" id="discard-rec">녹음 버리기</button>
+      </div>
+      ${optionsFieldsHTML(recorder.title)}
+      <div class="form-actions">
+        <button type="submit" class="btn btn-primary btn-lg" id="submit-finish">받아쓰기 시작</button>
+      </div>
+    </form>`;
+  const form = $("#finish-form");
+  form.subject.addEventListener("change", () => fillSubjectTerms(form));
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const btn = $("#submit-finish");
+    btn.disabled = true;
+    btn.textContent = "저장하는 중…";
+    const fd = new FormData();
+    appendOptions(fd, form);
+    try {
+      await api(`/api/live/${recorder.id}/finish`, { method: "POST", body: fd });
+      toast("녹음을 저장했어요. 받아쓰기가 끝나면 목록에서 열 수 있어요.");
+      resetRecorder();
+      refresh();
+      loadSubjects();
+    } catch (err) {
+      toast(err.message, "error");
+      btn.disabled = false;
+      btn.textContent = "받아쓰기 시작";
+    }
+  });
+  $("#discard-rec").addEventListener("click", async () => {
+    if (!(await confirmDialog("방금 녹음한 내용을 버릴까요? 되돌릴 수 없어요.", "버리기"))) return;
+    try { await api(`/api/recordings/${recorder.id}`, { method: "DELETE" }); } catch {}
+    resetRecorder();
+    refresh();
+  });
+  form.title.focus();
+  form.title.select();
+}
+
+async function finishInterrupted(id) {
+  // 브라우저가 꺼져서 끊긴 녹음: 저장된 조각까지 기본 설정(자동)으로 받아쓴다
+  const fd = new FormData();
+  fd.append("language", "auto");
+  try {
+    await api(`/api/live/${id}/finish`, { method: "POST", body: fd });
+    toast("저장된 부분까지 받아쓰기를 시작했어요.");
+    refresh();
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+
 /* ---------- 상태 갱신 ---------- */
 
 async function refresh() {
@@ -416,7 +745,7 @@ async function refresh() {
   } catch {
     // 서버가 잠깐 바쁠 수 있음. 다음 주기에 다시 시도
   }
-  const busy = state.recordings.some(isWorking);
+  const busy = state.recordings.some((r) => isWorking(r) || r.status === "recording");
   state.pollTimer = setTimeout(refresh, busy ? 1000 : 5000);
 }
 
@@ -429,6 +758,10 @@ async function loadSubjects() {
 /* ---------- 파일 선택 / 끌어다 놓기 ---------- */
 
 $("#btn-upload").addEventListener("click", pickFile);
+$("#btn-record").addEventListener("click", () => {
+  if (recorder.phase === "idle") startRecording();
+  else if (location.hash.startsWith("#/r/")) location.hash = "#/";
+});
 $("#file-input").addEventListener("change", (e) => acceptFile(e.target.files[0]));
 
 let dragDepth = 0;

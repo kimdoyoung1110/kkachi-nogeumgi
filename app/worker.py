@@ -33,6 +33,7 @@ STAGE_WEIGHTS = {
 }
 STAGE_ORDER = list(STAGE_WEIGHTS)
 STAGE_LABELS = {
+    "recording": "녹음 중",
     "queued": "대기 중",
     "decode": "파일 읽는 중",
     "diarize": "화자 구분 중",

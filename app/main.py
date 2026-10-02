@@ -12,11 +12,11 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Callable, Optional
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from app import config
+from app import config, live
 from app.db import Database
 from app.worker import STAGE_LABELS, Worker
 
@@ -70,11 +70,14 @@ def create_app(
 
     db = Database(data_dir / "kkachi.db")
     worker = Worker(db, recordings_dir, pipeline_factory)
+    awake = live.AwakeKeeper(recordings_dir)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         worker.start()
+        awake.start()
         yield
+        awake.stop()
         worker.stop()
 
     app = FastAPI(title="까치녹음기", lifespan=lifespan)
@@ -88,7 +91,10 @@ def create_app(
         return rec
 
     def with_label(rec: dict) -> dict:
-        return {**rec, "stage_label": STAGE_LABELS.get(rec["stage"] or rec["status"], "")}
+        out = {**rec, "stage_label": STAGE_LABELS.get(rec["stage"] or rec["status"], "")}
+        if rec["status"] == "recording":
+            out["stalled"] = live.is_stalled(recordings_dir / rec["id"])
+        return out
 
     @app.get("/api/health")
     def health() -> dict:
@@ -97,6 +103,25 @@ def create_app(
     @app.get("/api/recordings")
     def list_recordings() -> list[dict]:
         return [with_label(r) for r in db.list_recordings()]
+
+    def parse_options(language: str, num_speakers: str, hotwords: str, replacements: str, subject: str) -> dict:
+        if language not in ("auto", "ko", "en"):
+            raise HTTPException(400, "언어는 자동/한국어/영어 중에서 골라주세요.")
+        n_spk = int(num_speakers) if num_speakers.strip().isdigit() else None
+        if n_spk is not None and not 1 <= n_spk <= 8:
+            raise HTTPException(400, "화자 수는 1~8명까지 지정할 수 있어요.")
+        return dict(
+            language=None if language == "auto" else language,
+            num_speakers=n_spk,
+            hotwords=parse_terms(hotwords),
+            replacements=parse_replacements(replacements),
+            subject=subject.strip() or None,
+        )
+
+    def remember_subject(opts: dict) -> None:
+        if opts["subject"]:
+            # 과목을 정했으면 이번에 쓴 용어를 그 과목에 저장해서 다음 녹음에 다시 채워준다
+            db.save_subject(opts["subject"], opts["hotwords"], opts["replacements"])
 
     @app.post("/api/recordings", status_code=201)
     async def upload(
@@ -107,28 +132,13 @@ def create_app(
         hotwords: str = Form(""),
         replacements: str = Form(""),
         subject: str = Form(""),
-        source: str = Form("upload"),
     ) -> dict:
-        if language not in ("auto", "ko", "en"):
-            raise HTTPException(400, "언어는 자동/한국어/영어 중에서 골라주세요.")
-        n_spk = int(num_speakers) if num_speakers.strip().isdigit() else None
-        if n_spk is not None and not 1 <= n_spk <= 8:
-            raise HTTPException(400, "화자 수는 1~8명까지 지정할 수 있어요.")
-
+        opts = parse_options(language, num_speakers, hotwords, replacements, subject)
         file_name = "original" + _safe_suffix(file.filename)
         rec = db.create_recording(
-            title=title.strip() or Path(file.filename or "녹음").stem,
-            file_name=file_name,
-            source="record" if source == "record" else "upload",
-            language=None if language == "auto" else language,
-            num_speakers=n_spk,
-            hotwords=parse_terms(hotwords),
-            replacements=parse_replacements(replacements),
-            subject=subject.strip() or None,
+            title=title.strip() or Path(file.filename or "녹음").stem, file_name=file_name, **opts
         )
-        if rec["subject"]:
-            # 과목을 정했으면 이번에 쓴 용어를 그 과목에 저장해서 다음 녹음에 다시 채워준다
-            db.save_subject(rec["subject"], rec["hotwords"], rec["replacements"])
+        remember_subject(opts)
 
         dest_dir = recordings_dir / rec["id"]
         dest_dir.mkdir(parents=True, exist_ok=True)
@@ -159,7 +169,7 @@ def create_app(
     @app.post("/api/recordings/{rec_id}/retry")
     def retry(rec_id: str) -> dict:
         rec = get_or_404(rec_id)
-        if rec["status"] in ("queued", "processing"):
+        if rec["status"] in ("queued", "processing", "recording"):
             raise HTTPException(409, "이미 처리 중이에요.")
         worker.enqueue(rec_id)
         return with_label(db.get_recording(rec_id))
@@ -167,6 +177,7 @@ def create_app(
     @app.delete("/api/recordings/{rec_id}", status_code=204)
     def delete(rec_id: str) -> None:
         get_or_404(rec_id)
+        awake.release(rec_id)
         db.delete_recording(rec_id)
         shutil.rmtree(recordings_dir / rec_id, ignore_errors=True)
 
@@ -177,6 +188,58 @@ def create_app(
         if not path.exists():
             raise HTTPException(404, "녹음 파일이 없어요.")
         return FileResponse(path)
+
+    # ---- 브라우저 녹음 ----
+
+    @app.post("/api/live", status_code=201)
+    def live_start(title: str = Form(""), container: str = Form("webm")) -> dict:
+        # 형식은 시작할 때 정해 둔다 → 브라우저가 꺼진 녹음도 나중에 합칠 수 있다
+        file_name = "original" + live.CONTAINERS.get(container, ".webm")
+        rec = db.create_recording(title=title.strip() or "새 녹음", file_name=file_name, source="record")
+        db.update_recording(rec["id"], status="recording", stage="recording")
+        (recordings_dir / rec["id"]).mkdir(parents=True, exist_ok=True)
+        awake.hold(rec["id"])
+        return with_label(db.get_recording(rec["id"]))
+
+    @app.put("/api/live/{rec_id}/chunks/{seq}", status_code=204)
+    async def live_chunk(rec_id: str, seq: int, request: Request) -> None:
+        rec = get_or_404(rec_id)
+        if rec["status"] != "recording":
+            raise HTTPException(409, "이미 끝난 녹음이에요.")
+        if not 0 <= seq < 1_000_000:
+            raise HTTPException(400, "잘못된 조각 번호예요.")
+        data = await request.body()
+        if not data or len(data) > live.MAX_CHUNK_BYTES:
+            raise HTTPException(400, "녹음 조각이 비었거나 너무 커요.")
+        try:
+            live.save_chunk(recordings_dir / rec_id, seq, data)
+        except OSError:
+            raise HTTPException(507, "저장 공간이 부족해서 녹음을 저장하지 못했어요.")
+        awake.hold(rec_id)  # 끊겼다가 다시 이어진 경우
+
+    @app.post("/api/live/{rec_id}/finish")
+    def live_finish(
+        rec_id: str,
+        title: str = Form(""),
+        language: str = Form("auto"),
+        num_speakers: str = Form(""),
+        hotwords: str = Form(""),
+        replacements: str = Form(""),
+        subject: str = Form(""),
+    ) -> dict:
+        rec = get_or_404(rec_id)
+        if rec["status"] != "recording":
+            raise HTTPException(409, "이미 끝난 녹음이에요.")
+        opts = parse_options(language, num_speakers, hotwords, replacements, subject)
+        awake.release(rec_id)
+        try:
+            file_name = live.assemble(recordings_dir / rec_id, Path(rec["file_name"]).suffix)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        db.update_recording(rec_id, file_name=file_name, title=title.strip() or rec["title"], **opts)
+        remember_subject(opts)
+        worker.enqueue(rec_id)
+        return with_label(db.get_recording(rec_id))
 
     @app.get("/api/subjects")
     def subjects() -> list[dict]:

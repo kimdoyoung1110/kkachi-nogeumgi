@@ -174,3 +174,81 @@ def test_subject_terms_saved_on_upload(make_client):
         assert subs[1] == {"name": "자료구조", "hotwords": ["hash table"], "replacements": {"컬리전": "collision"}}
         assert client.delete("/api/subjects/운영체제").status_code == 204
         assert [x["name"] for x in client.get("/api/subjects").json()] == ["자료구조"]
+
+
+# ---- 브라우저 녹음 ----
+
+def _webm_chunks(tmp_path, n=3):
+    """진짜 webm 녹음을 만들어 MediaRecorder 처럼 바이트 단위로 n 조각으로 나눈다."""
+    import subprocess, imageio_ffmpeg
+    out = tmp_path / "src.webm"
+    subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), "-loglevel", "error", "-y", "-i", WAV,
+                    "-c:a", "libopus", "-b:a", "48k", str(out)], check=True)
+    data = out.read_bytes()
+    size = len(data) // n + 1
+    return [data[i:i + size] for i in range(0, len(data), size)]
+
+
+def test_live_recording_flow(make_client, tmp_path):
+    pipe = FakePipeline()
+    client, app = make_client(pipe)
+    with client:
+        rec = client.post("/api/live", data={"title": "실시간", "container": "webm"}).json()
+        assert rec["status"] == "recording" and rec["stage_label"] == "녹음 중" and rec["stalled"] is False
+        rid = rec["id"]
+
+        chunks = _webm_chunks(tmp_path)
+        # 순서가 섞여 오거나 같은 조각이 다시 와도 결과는 같아야 한다
+        for seq in (1, 0, 2, 1):
+            assert client.put(f"/api/live/{rid}/chunks/{seq}", content=chunks[seq]).status_code == 204
+
+        assert client.post(f"/api/recordings/{rid}/retry").status_code == 409  # 녹음 중엔 불가
+        r = client.post(f"/api/live/{rid}/finish", data={"title": "자료구조 녹음",
+                                                         "language": "ko", "subject": "자료구조"})
+        assert r.status_code == 200 and r.json()["status"] == "queued"
+        app.state.worker.wait_idle()
+
+        d = client.get(f"/api/recordings/{rid}").json()
+        assert d["status"] == "done" and d["title"] == "자료구조 녹음" and d["source"] == "record"
+        assert d["file_name"] == "original.webm" and 25 < d["duration"] < 30
+        assert pipe.calls[-1]["language"] == "ko"
+        rec_dir = tmp_path / "recordings" / rid
+        assert not (rec_dir / "chunks").exists()
+        assert client.get(f"/api/recordings/{rid}/audio").status_code == 200
+
+        # 끝난 녹음엔 더 못 붙임
+        assert client.put(f"/api/live/{rid}/chunks/3", content=b"x").status_code == 409
+        assert client.post(f"/api/live/{rid}/finish").status_code == 409
+
+
+def test_live_finish_without_chunks_fails(make_client):
+    client, _ = make_client(FakePipeline())
+    with client:
+        rid = client.post("/api/live").json()["id"]
+        r = client.post(f"/api/live/{rid}/finish")
+        assert r.status_code == 400 and "조각" in r.json()["detail"]
+
+
+def test_live_stalled_detection(make_client, tmp_path):
+    import os, time
+    from app import live
+    client, _ = make_client(FakePipeline())
+    with client:
+        rid = client.post("/api/live").json()["id"]
+        client.put(f"/api/live/{rid}/chunks/0", content=b"abc")
+        old = time.time() - live.STALLED_SECONDS - 5
+        for p in (tmp_path / "recordings" / rid).rglob("*"):
+            os.utime(p, (old, old))
+        os.utime(tmp_path / "recordings" / rid, (old, old))
+        items = client.get("/api/recordings").json()
+        assert items[0]["status"] == "recording" and items[0]["stalled"] is True
+
+
+def test_recording_status_survives_restart(make_client):
+    client, app = make_client(FakePipeline())
+    with client:
+        rid = client.post("/api/live").json()["id"]
+    client2, _ = make_client(FakePipeline())
+    with client2:
+        # 녹음 중이던 건 실패로 바꾸지 않는다 (저장된 부분을 나중에 받아쓸 수 있게)
+        assert client2.get(f"/api/recordings/{rid}/status").json()["status"] == "recording"
