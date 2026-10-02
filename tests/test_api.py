@@ -161,3 +161,16 @@ def test_fts_search_korean_substring(make_client):
 def test_parsers():
     assert parse_terms(" a, b\nc ,") == ["a", "b", "c"]
     assert parse_replacements("x=y\n가 -> 나\n잘못된줄") == {"x": "y", "가": "나"}
+
+
+def test_subject_terms_saved_on_upload(make_client):
+    client, app = make_client(FakePipeline())
+    with client:
+        upload(client, subject="자료구조", hotwords="hash table", replacements="컬리전=collision")
+        upload(client, subject="운영체제", hotwords="semaphore")
+        app.state.worker.wait_idle()
+        subs = client.get("/api/subjects").json()
+        assert [x["name"] for x in subs] == ["운영체제", "자료구조"]
+        assert subs[1] == {"name": "자료구조", "hotwords": ["hash table"], "replacements": {"컬리전": "collision"}}
+        assert client.delete("/api/subjects/운영체제").status_code == 204
+        assert [x["name"] for x in client.get("/api/subjects").json()] == ["자료구조"]

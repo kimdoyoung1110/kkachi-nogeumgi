@@ -26,6 +26,15 @@ WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 UPLOAD_CHUNK = 1024 * 1024
 
 
+class WebFiles(StaticFiles):
+    """화면 파일은 매번 최신인지 확인하게 한다 (업데이트 후 예전 화면이 보이는 것 방지)."""
+
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 def parse_terms(text: str) -> list[str]:
     """'hash table, collision\\nlinked list' → ['hash table', 'collision', 'linked list']"""
     return [t.strip() for t in re.split(r"[,\n]", text or "") if t.strip()]
@@ -117,6 +126,10 @@ def create_app(
             replacements=parse_replacements(replacements),
             subject=subject.strip() or None,
         )
+        if rec["subject"]:
+            # 과목을 정했으면 이번에 쓴 용어를 그 과목에 저장해서 다음 녹음에 다시 채워준다
+            db.save_subject(rec["subject"], rec["hotwords"], rec["replacements"])
+
         dest_dir = recordings_dir / rec["id"]
         dest_dir.mkdir(parents=True, exist_ok=True)
         try:
@@ -165,8 +178,16 @@ def create_app(
             raise HTTPException(404, "녹음 파일이 없어요.")
         return FileResponse(path)
 
+    @app.get("/api/subjects")
+    def subjects() -> list[dict]:
+        return db.list_subjects()
+
+    @app.delete("/api/subjects/{name}", status_code=204)
+    def delete_subject(name: str) -> None:
+        db.delete_subject(name)
+
     if (WEB_DIR / "index.html").exists():
-        app.mount("/", StaticFiles(directory=WEB_DIR, html=True), name="web")
+        app.mount("/", WebFiles(directory=WEB_DIR, html=True), name="web")
 
     return app
 

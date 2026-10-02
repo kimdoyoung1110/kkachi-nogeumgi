@@ -1,0 +1,15 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "kkachi-dev",
+      "runtimeExecutable": "/usr/bin/env",
+      "runtimeArgs": [
+        "KKACHI_DATA_DIR=/private/tmp/claude-501/-Users-dozero-development-kkachi-nogeumgi/f6accd55-be30-4f1e-99c8-7e220354012b/scratchpad/data",
+        "PYTHONWARNINGS=ignore",
+        "uv", "run", "uvicorn", "app.main:app", "--port", "8765"
+      ],
+      "port": 8765
+    }
+  ]
+}

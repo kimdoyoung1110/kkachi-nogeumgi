@@ -56,7 +56,7 @@ Step 3 실서버 확인: 업로드 → 진행률(파일 읽기→화자 구분�
 - [x] **Step 2. 화자 구분** — `app/diarize.py`(Nemotron 프레임별 화자 확률), `app/merge.py`(단어마다 평균 확률 최대 화자, 짧은 튐 보정, 첫 등장순 번호, 문단 묶기: 화자 변경/문장 끝 2초 이상 쉼/60초 초과), `app/pipeline.py`, 화자 수 지정(말한 시간 상위 N명만 남김), 테스트 6개
 - [x] **Step 2.5. 혼합 모드** — `app/langid.py`(ECAPA VoxLingua107, ko/en만), 화자 턴을 8초 조각으로 나눠 언어 판정 → 같은 언어끼리 묶어 30초 이내(화자 교체 지점 우선)로 자르고 **언어 고정 전사**, 단어별 글자 종류로 KO/EN/mixed 표시, 용어 바꾸기 사전(`replacements`), 문단 재전사 `Pipeline.retranscribe()`
 - [x] **Step 3. 서버** — `app/db.py`(SQLite WAL, recordings/speakers/utterances + FTS5 trigram), `app/worker.py`(단일 작업 스레드, 단계 가중 진행률, 쉬운 오류 문구, 재시작 시 중단 작업 실패 처리·대기 작업 재개, `caffeinate -i -w <pid>`), `app/main.py`(업로드/목록/상세/상태/재시도/삭제/오디오 API), API 테스트 11개 (가짜 파이프라인)
-- [ ] Step 4. 업로드 화면 (언어 선택: 자동(혼합)/한국어/영어, 화자 수, 과목별 용어 힌트)
+- [x] **Step 4. 업로드 화면** — `web/`(순수 HTML/CSS/JS, 외부 파일 없음, 라이트/다크): 끌어다 놓기·파일 선택, 제목/언어/화자 수/과목/용어 힌트·바꾸기, 업로드 진행률, 녹음 목록(상태 칩·실시간 진행률·실패 시 다시 시도·삭제 확인), 기본 결과 보기(화자 색, 시간 클릭 재생). 과목별 용어 저장 API(`/api/subjects`). 화면 파일 `Cache-Control: no-cache`
 - [ ] Step 5. 브라우저 녹음 (10초 단위 저장, 일시정지, 탭 닫기 경고)
 - [ ] Step 6. 결과 화면 (화자 색, 이름 변경, 화자/텍스트 수정, KO/EN 표시, 구간 재전사, 클릭 재생)
 - [ ] Step 7. 검색 + 내보내기 (txt / md / srt)

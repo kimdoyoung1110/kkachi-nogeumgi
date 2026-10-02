@@ -52,6 +52,14 @@ CREATE TABLE IF NOT EXISTS utterances (
 );
 CREATE INDEX IF NOT EXISTS utterances_rec ON utterances(recording_id, idx);
 
+-- 과목별로 저장해 두는 용어 힌트 / 바꾸기 사전 (다음 녹음에 자동으로 채워짐)
+CREATE TABLE IF NOT EXISTS subjects (
+    name         TEXT PRIMARY KEY,
+    hotwords     TEXT NOT NULL DEFAULT '[]',
+    replacements TEXT NOT NULL DEFAULT '{}',
+    updated_at   REAL NOT NULL
+);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS utterances_fts USING fts5(
     text, content='utterances', content_rowid='id', tokenize='trigram'
 );
@@ -148,6 +156,31 @@ class Database:
                 f"SELECT id FROM recordings WHERE status IN ({q}) ORDER BY created_at", statuses
             ).fetchall()
         return [r["id"] for r in rows]
+
+    # ---- 과목 ----
+
+    def list_subjects(self) -> list[dict[str, Any]]:
+        with self.conn() as c:
+            rows = c.execute("SELECT * FROM subjects ORDER BY updated_at DESC").fetchall()
+        return [
+            {"name": r["name"], "hotwords": json.loads(r["hotwords"]),
+             "replacements": json.loads(r["replacements"])}
+            for r in rows
+        ]
+
+    def save_subject(self, name: str, hotwords: list[str], replacements: dict[str, str]) -> None:
+        with self.conn() as c:
+            c.execute(
+                "INSERT INTO subjects (name, hotwords, replacements, updated_at) VALUES (?,?,?,?)"
+                " ON CONFLICT(name) DO UPDATE SET hotwords=excluded.hotwords,"
+                " replacements=excluded.replacements, updated_at=excluded.updated_at",
+                (name, json.dumps(hotwords, ensure_ascii=False),
+                 json.dumps(replacements, ensure_ascii=False), time.time()),
+            )
+
+    def delete_subject(self, name: str) -> None:
+        with self.conn() as c:
+            c.execute("DELETE FROM subjects WHERE name = ?", (name,))
 
     # ---- 전사 결과 ----
 

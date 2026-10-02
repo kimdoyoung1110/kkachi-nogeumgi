@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>까치녹음기</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🐦‍⬛</text></svg>">
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#/">
+      <span class="brand-mark" aria-hidden="true">🐦‍⬛</span>
+      <span class="brand-name">까치녹음기</span>
+    </a>
+    <nav class="topbar-actions">
+      <button class="btn btn-ghost" id="btn-record" disabled title="다음 업데이트에서 열려요">● 녹음하기</button>
+      <button class="btn btn-primary" id="btn-upload">파일 올리기</button>
+    </nav>
+  </header>
+
+  <main id="view" class="container" aria-live="polite"></main>
+
+  <input type="file" id="file-input" accept="audio/*,video/*,.m4a,.mp3,.wav,.webm,.mp4,.aac,.ogg,.flac" hidden>
+
+  <div class="drop-overlay" id="drop-overlay" hidden>
+    <div class="drop-overlay-inner">여기에 놓으면 올라가요</div>
+  </div>
+
+  <div class="toast-stack" id="toasts" role="status"></div>
+
+  <dialog id="confirm-dialog" class="dialog">
+    <form method="dialog">
+      <p id="confirm-text"></p>
+      <div class="dialog-actions">
+        <button class="btn btn-ghost" value="cancel">취소</button>
+        <button class="btn btn-danger" value="ok" id="confirm-ok">삭제</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="app.js"></script>
+</body>
+</html>
