@@ -178,6 +178,8 @@ class Transcriber:
             return texts
 
         out: list[str] = []
+        if progress:
+            progress("transcribe", 0, len(chunks))
         for b0 in range(0, len(chunks), self.batch_size):
             out.extend(run(chunks[b0:b0 + self.batch_size]))
             if progress:
@@ -192,6 +194,8 @@ class Transcriber:
 
     def _align(self, segments: list[Segment], chunks, progress) -> None:
         by_offset = {offset: chunk for chunk, offset in chunks}
+        if progress:
+            progress("align", 0, len(segments))
         for i, seg in enumerate(segments):
             chunk = by_offset[seg.start]
             qwen_lang = LANG_TO_QWEN.get(seg.language, "English")
