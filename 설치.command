@@ -51,7 +51,8 @@ PYTHONWARNINGS=ignore .venv/bin/python -m app.bootstrap selftest || fail "시험
 bold "5/5 까치녹음기 앱 만들기"
 # 이미 켜져 있으면 끄고 새로 만든다 (업데이트 반영)
 curl -fsS -X POST --max-time 3 http://127.0.0.1:8765/api/app/quit >/dev/null 2>&1 && sleep 2
-APP="$(bash scripts/build_app.sh "$REPO")" || fail "앱을 만들지 못했어요."
+# KKACHI_APP_DIR: 앱을 둘 폴더 (기본은 응용 프로그램 폴더, 리허설할 때만 바꿈)
+APP="$(bash scripts/build_app.sh "$REPO" "${KKACHI_APP_DIR:-}")" || fail "앱을 만들지 못했어요."
 ok "$APP"
 
 cat <<'DONE'
