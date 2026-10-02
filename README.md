@@ -9,6 +9,7 @@
 | 전사 | Qwen3-ASR 1.7B (MLX, 8bit) via `mlx-audio` |
 | 단어 타임스탬프 | Qwen3-ForcedAligner 0.6B (+ `soynlp` 한국어 토크나이저) |
 | 화자 구분 | Nemotron 3 Diarization (MLX, 최대 8명) |
+| 언어 감지 (한·영 혼합) | SpeechBrain ECAPA VoxLingua107 (MLX) |
 | 오디오 변환 | `imageio-ffmpeg` (Homebrew 불필요) |
 | 서버 | FastAPI + uvicorn |
 | 저장 | SQLite (`~/Library/Application Support/KkachiNogeumgi/`) |

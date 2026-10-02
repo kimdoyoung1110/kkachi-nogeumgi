@@ -23,6 +23,8 @@ ASR_MODEL = "mlx-community/Qwen3-ASR-1.7B-8bit"
 ALIGNER_MODEL = "mlx-community/Qwen3-ForcedAligner-0.6B-8bit"
 # 화자 구분: NVIDIA Nemotron 3 Diarization (MLX). 토큰 불필요, 최대 8명.
 DIARIZATION_MODEL = "mlx-community/Nemotron-3-Diarization"
+# 언어 감지 (한·영 혼합 모드): SpeechBrain ECAPA VoxLingua107 MLX 변환본. Apache-2.0, 약 80MB.
+LANGID_MODEL = "beshkenadze/lang-id-voxlingua107-ecapa-mlx"
 ASR_CHUNK_SECONDS = 30
 ASR_BATCH_SIZE = 8
 SAMPLE_RATE = 16000

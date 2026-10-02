@@ -56,7 +56,14 @@ def test_paragraph_breaks_on_long_pause_after_sentence():
     assert all(u.speaker == 0 for u in utts)
 
 
-def test_utterance_language_is_majority():
-    act = activity([(0, 5, 0)])
-    segs = [seg([("a", 0, 1), ("b", 1, 2)], "en"), seg([("가", 2, 3)], "ko")]
-    assert build_utterances(assign_speakers(segs, act))[0].language == "en"
+def test_utterance_language_by_word_script():
+    act = activity([(0, 9, 0)])
+    # 모델이 구간을 en 으로 감지했어도 한글 단어는 ko 로 센다
+    segs = [seg([("오늘은", 0, 1), ("quicksort를", 1, 2), ("배워요", 2, 3), ("그리고", 3, 4)], "en")]
+    assert build_utterances(assign_speakers(segs, act))[0].language == "ko"
+
+
+def test_utterance_language_mixed():
+    act = activity([(0, 9, 0)])
+    segs = [seg([("What", 0, 1), ("is", 1, 2), ("this?", 2, 3)], "en"), seg([("네", 3, 4), ("맞아요", 4, 5)], "ko")]
+    assert build_utterances(assign_speakers(segs, act))[0].language == "mixed"

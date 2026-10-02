@@ -64,6 +64,29 @@ def looks_repetitive(text: str, min_unit: int = 2, max_unit: int = 20, times: in
     return bool(pattern.search(text))
 
 
+_HANGUL = re.compile(r"[가-힣ᄀ-ᇿ㄰-㆏]")
+_LATIN = re.compile(r"[A-Za-z]")
+
+
+def word_language(text: str, fallback: str) -> str:
+    """단어 하나의 언어를 글자로 판단한다. 한글이 섞이면 ko (collision이라고 → ko), 영문만 있으면 en."""
+    if _HANGUL.search(text):
+        return "ko"
+    if _LATIN.search(text):
+        return "en"
+    return fallback
+
+
+def apply_replacements(text: str, replacements: Optional[dict[str, str]]) -> str:
+    """용어 바꾸기 사전 적용. 긴 표현부터 바꿔서 '세프리 체인잉'이 '체인잉'보다 먼저 처리되게 한다."""
+    if not replacements:
+        return text
+    for src in sorted(replacements, key=len, reverse=True):
+        if src:
+            text = text.replace(src, replacements[src])
+    return text
+
+
 def attach_words(text: str, tokens: list[tuple[str, float, float]], offset: float) -> list[Word]:
     """정렬기 토큰(구두점 제거됨)을 원문 띄어쓰기 단위 단어(구두점 포함)에 시간으로 매핑한다."""
     # 1) 토큰 → 원문 글자 위치
@@ -134,62 +157,86 @@ class Transcriber:
         hotwords: Optional[list[str]] = None,
         progress: Optional[ProgressFn] = None,
         align: bool = True,
+        spans: Optional[list[segmenter.Span]] = None,
+        replacements: Optional[dict[str, str]] = None,
+        span_languages: Optional[list[str]] = None,
     ) -> list[Segment]:
-        """language: None(자동, 구간마다 감지) / "ko" / "en"."""
-        sr = config.SAMPLE_RATE
-        spans = [s for s in segmenter.split(audio, sr, self.chunk_seconds)
-                 if not segmenter.is_silent(audio[s.start:s.end])]
-        chunks = [(audio[s.start:s.end], s.start / sr) for s in spans]
+        """language: None(자동, 구간마다 감지) / "ko" / "en".
 
-        raw_texts = self._transcribe_chunks(chunks, language, hotwords, progress)
+        spans 를 주면 그 구간대로 전사한다 (보통 화자 턴 기준). 없으면 30초 단위로 자른다.
+        replacements 는 전사 결과에 적용할 용어 바꾸기 사전 (예: {"컬리전": "collision"}).
+        span_languages 를 주면 구간마다 그 언어로 고정해서 전사한다 (혼합 모드). language 보다 우선.
+        """
+        sr = config.SAMPLE_RATE
+        if spans is None:
+            spans = segmenter.split(audio, sr, self.chunk_seconds)
+        if span_languages is None:
+            span_languages = [language] * len(spans)
+        keep = [i for i, s in enumerate(spans) if not segmenter.is_silent(audio[s.start:s.end])]
+        chunks = [(audio[spans[i].start:spans[i].end], spans[i].start / sr) for i in keep]
+        langs = [span_languages[i] for i in keep]
+
+        raw_texts = self._transcribe_chunks(chunks, langs, hotwords, progress)
 
         segments: list[Segment] = []
-        for (chunk, offset), raw in zip(chunks, raw_texts):
-            lang, text = parse_language(raw, language)
+        for (chunk, offset), raw, forced in zip(chunks, raw_texts, langs):
+            lang, text = parse_language(raw, forced)
             if not text or lang is None:
                 continue
-            segments.append(Segment(offset, offset + len(chunk) / sr, lang, text))
+            segments.append(Segment(offset, offset + len(chunk) / sr, lang, apply_replacements(text, replacements)))
 
         if align:
             self._align(segments, chunks, progress)
         return segments
 
-    def _transcribe_chunks(self, chunks, language, hotwords, progress) -> list[str]:
+    def _transcribe_chunks(self, chunks, languages, hotwords, progress) -> list[str]:
+        """languages: 구간마다 None(자동) / "ko" / "en". 같은 언어끼리 배치로 묶는다."""
         from mlx_audio.lm.sample_utils import make_logits_processors, make_sampler
         from mlx_audio.stt.utils import merge_hotwords
 
         model = self.asr
         sampler = make_sampler(0.0, 1.0, 0.0, min_tokens_to_keep=1, top_k=0)
-        qwen_lang = LANG_TO_QWEN.get(language) if language else None
         system_prompt = merge_hotwords(None, hotwords)
 
-        def run(group, logits_processors=None):
+        def run(group, lang, logits_processors=None):
             # mlx-audio 0.5.7 내부 함수. 구간 단위 언어 감지와 배치 처리를 우리가 직접 제어하려고 사용.
             texts, *_ = model._generate_chunks_batched(
                 group,
                 max_tokens=TOKENS_PER_CHUNK * len(group),
                 sampler=sampler,
                 logits_processors=logits_processors,
-                language=qwen_lang,
+                language=LANG_TO_QWEN.get(lang) if lang else None,
                 system_prompt=system_prompt,
                 batch_size=len(group),
                 verbose=False,
             )
             return texts
 
-        out: list[str] = []
+        # 배치 안에서는 가장 긴 구간 길이에 맞춰 패딩되므로 길이순으로 묶어서 낭비를 줄인다
+        order = sorted(range(len(chunks)), key=lambda i: (str(languages[i]), len(chunks[i][0])))
+        batches: list[list[int]] = []
+        for i in order:
+            if batches and len(batches[-1]) < self.batch_size and languages[batches[-1][0]] == languages[i]:
+                batches[-1].append(i)
+            else:
+                batches.append([i])
+
+        out: list[str] = [""] * len(chunks)
+        done = 0
         if progress:
             progress("transcribe", 0, len(chunks))
-        for b0 in range(0, len(chunks), self.batch_size):
-            out.extend(run(chunks[b0:b0 + self.batch_size]))
+        for idx in batches:
+            for i, text in zip(idx, run([chunks[i] for i in idx], languages[idx[0]])):
+                out[i] = text
+            done += len(idx)
             if progress:
-                progress("transcribe", min(b0 + self.batch_size, len(chunks)), len(chunks))
+                progress("transcribe", done, len(chunks))
 
         # 반복 루프에 빠진 구간은 반복 억제를 켜고 하나씩 다시
         retry = make_logits_processors(repetition_penalty=1.15, repetition_context_size=100)
         for i, text in enumerate(out):
             if looks_repetitive(text):
-                out[i] = run([chunks[i]], retry)[0]
+                out[i] = run([chunks[i]], languages[i], retry)[0]
         return out
 
     def _align(self, segments: list[Segment], chunks, progress) -> None:

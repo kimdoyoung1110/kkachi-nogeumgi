@@ -8,8 +8,10 @@ from typing import Optional
 import numpy as np
 
 from app.diarize import SpeakerActivity
-from app.stt import Segment, Word
+from app.stt import Segment, Word, word_language
 
+# 문단 안에서 소수 언어가 이 비율 이상이면 'mixed' 로 표시
+MIXED_MIN_SHARE = 0.3
 # 문단을 끊는 기준: 같은 화자라도 이만큼 길어지면 문장 끝에서 새 문단
 PARAGRAPH_MAX_SECONDS = 60.0
 # 같은 화자라도 문장 끝에서 이만큼 쉬면 새 문단
@@ -31,7 +33,7 @@ class Utterance:
     speaker: int  # 0부터, 처음 말한 순서대로
     start: float
     end: float
-    language: str
+    language: str  # "ko" / "en" / "mixed" / 그 외 언어
     text: str
     words: list[SpeakerWord] = field(default_factory=list)
 
@@ -55,7 +57,7 @@ def assign_speakers(
         for w in words:
             p = activity.mean_probs(w.start, w.end)[allowed]
             spk = int(allowed[int(np.argmax(p))]) if p.max() > 0.05 else -1
-            out.append(SpeakerWord(w.text, w.start, w.end, spk, seg.language))
+            out.append(SpeakerWord(w.text, w.start, w.end, spk, word_language(w.text, seg.language)))
 
     _fill_unknown(out)
     _smooth(out)
@@ -107,6 +109,15 @@ def _renumber(words: list[SpeakerWord]) -> None:
         w.speaker = mapping[w.speaker]
 
 
+def utterance_language(words: list[SpeakerWord]) -> str:
+    langs = [w.language for w in words]
+    top = max(set(langs), key=langs.count)
+    ko, en = langs.count("ko"), langs.count("en")
+    if ko and en and min(ko, en) / (ko + en) >= MIXED_MIN_SHARE:
+        return "mixed"
+    return top
+
+
 def build_utterances(words: list[SpeakerWord]) -> list[Utterance]:
     """연속된 같은 화자 단어를 문단으로 묶는다."""
     utts: list[Utterance] = []
@@ -115,13 +126,11 @@ def build_utterances(words: list[SpeakerWord]) -> list[Utterance]:
     def flush():
         if not cur:
             return
-        langs = [w.language for w in cur]
-        lang = max(set(langs), key=langs.count)
         utts.append(Utterance(
             speaker=cur[0].speaker,
             start=cur[0].start,
             end=cur[-1].end,
-            language=lang,
+            language=utterance_language(cur),
             text=" ".join(w.text for w in cur),
             words=list(cur),
         ))
