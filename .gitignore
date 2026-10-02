@@ -12,3 +12,4 @@ data/
 !tests/audio/*.wav
 tests/audio/long_*.wav
 .claude/
+docs/images/

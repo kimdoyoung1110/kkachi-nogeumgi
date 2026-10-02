@@ -430,16 +430,17 @@ function renderCategories() {
 
 /* ---------- 공부 기록: 까치 레벨 + 공부 잔디 ---------- */
 
-// 그림: Google Noto 애니메이션 이모지 (web/emoji, CC BY 4.0). 4단계부터는 까치가 계속 주인공이고 배지가 붙는다
+// 그림: Google Noto 애니메이션 이모지 (web/emoji, CC BY 4.0).
+// 4단계부터는 까치가 주인공: 레벨마다 깃털 색이 바뀌고 학사모·왕관을 머리에 쓴다 (scripts/make_level_art.py 로 생성)
 const LEVELS = [
   { hours: 0, icon: "🥚", main: "egg.svg", title: "까치 알", line: "첫 강의를 받아쓰면 알을 깨고 나와요" },
   { hours: 1, icon: "🐣", main: "hatching.webp", title: "아기 까치", line: "알을 깨고 나왔어요!" },
   { hours: 5, icon: "🐥", main: "chick.webp", title: "꼬마 까치", line: "날갯짓을 배우는 중이에요" },
-  { hours: 10, icon: "🐦‍⬛", main: "magpie.webp", title: "부지런한 까치", line: "매일매일 물어 나르는 중" },
-  { hours: 25, icon: "📚", main: "magpie.webp", badge: "books.webp", title: "똑똑한 까치", line: "책을 물고 다니기 시작했어요" },
-  { hours: 50, icon: "🎓", main: "magpie.webp", badge: "cap.webp", title: "박사 까치", line: "학사모를 썼어요! 까치 마을에 소문이 났어요" },
-  { hours: 100, icon: "👑", main: "magpie.webp", badge: "crown.webp", title: "수석 까치", line: "까치들의 우두머리!" },
-  { hours: 200, icon: "✨", main: "magpie.webp", badge: "crown.webp", aura: true, title: "전설의 까치", line: "전설로 남을 공부량이에요" },
+  { hours: 10, icon: "🐦‍⬛", main: "magpie-lv4.webp", title: "부지런한 까치", line: "매일매일 물어 나르는 중" },
+  { hours: 25, icon: "📚", main: "magpie-lv5.webp", badge: "books.webp", title: "똑똑한 까치", line: "깃털에 푸른빛이 돌기 시작했어요" },
+  { hours: 50, icon: "🎓", main: "magpie-lv6.webp", title: "박사 까치", line: "학사모를 썼어요! 깃털도 보랏빛으로 빛나요" },
+  { hours: 100, icon: "👑", main: "magpie-lv7.webp", title: "수석 까치", line: "왕관을 썼어요! 날개선이 금빛이에요" },
+  { hours: 200, icon: "✨", main: "magpie-lv8.webp", aura: true, title: "전설의 까치", line: "무지개빛 깃털, 전설로 남을 공부량이에요" },
 ];
 
 function levelArt(li, size = "") {
@@ -447,7 +448,7 @@ function levelArt(li, size = "") {
   return `
     <div class="kk-art ${size} lv${li}" aria-hidden="true">
       ${lv.aura ? `<img class="kk-aura" src="emoji/sparkles.webp" alt="">` : ""}
-      <img class="kk-main ${lv.main === "egg.svg" ? "wobble" : ""}" src="emoji/${lv.main}" alt="">
+      <img class="kk-main ${lv.main === "egg.svg" ? "wobble" : ""} ${lv.main.startsWith("magpie-lv") ? "padded" : ""}" src="emoji/${lv.main}" alt="">
       ${lv.badge ? `<img class="kk-badge" src="emoji/${lv.badge}" alt="">` : ""}
     </div>`;
 }
