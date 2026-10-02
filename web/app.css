@@ -394,6 +394,47 @@ mark { background: color-mix(in srgb, var(--warn) 28%, transparent); color: inhe
 .utt.starred { background: color-mix(in srgb, var(--warn-soft) 70%, transparent); }
 .star-toggle span { font-weight: 600; }
 
+/* ---------- 공부 기록 ---------- */
+.study { display: grid; grid-template-columns: minmax(220px, 1fr) auto; gap: 18px 28px; align-items: center; padding: 18px 20px; margin-bottom: 26px; }
+@media (max-width: 720px) { .study { grid-template-columns: 1fr; } }
+.kk-level { display: flex; gap: 14px; align-items: center; }
+.level-icon { font-size: 44px; width: 64px; height: 64px; display: grid; place-items: center; border-radius: 18px; background: var(--surface-2); flex-shrink: 0; }
+.level-body { flex: 1; min-width: 0; display: grid; gap: 4px; }
+.level-name { font-size: 14px; color: var(--text-2); }
+.level-name b { color: var(--text); font-size: 16px; }
+.level-line { font-size: 13px; color: var(--text-3); }
+.level-bar { height: 8px; border-radius: 4px; background: var(--surface-2); overflow: hidden; margin-top: 4px; }
+.level-bar > div { height: 100%; border-radius: 4px; background: linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent) 60%, #a855f7)); transition: width .8s ease; }
+.level-next { font-size: 12.5px; color: var(--text-3); }
+.study-stats { display: flex; gap: 14px; flex-wrap: wrap; font-size: 13px; color: var(--text-2); margin-bottom: 8px; }
+.study-stats b { color: var(--text); }
+.grass-wrap { display: flex; gap: 6px; }
+.grass-days { display: grid; grid-template-rows: 16px repeat(7, 12px); row-gap: 3px; font-size: 10px; color: var(--text-3); line-height: 12px; }
+.grass-months { display: grid; grid-template-columns: repeat(18, 12px); column-gap: 3px; height: 16px; font-size: 10px; color: var(--text-3); white-space: nowrap; }
+.grass { display: grid; grid-template-columns: repeat(18, 12px); column-gap: 3px; }
+.grass-col { display: grid; grid-template-rows: repeat(7, 12px); row-gap: 3px; }
+.grass-cell { display: inline-block; width: 12px; height: 12px; border-radius: 3px; background: var(--surface-2); outline: 1px solid color-mix(in srgb, var(--border) 60%, transparent); outline-offset: -1px; }
+.grass-cell[data-min]:not([data-min="0"]) { cursor: pointer; }
+.grass-cell.future { visibility: hidden; }
+.grass-cell.lv1 { background: color-mix(in srgb, var(--ok) 30%, var(--surface-2)); }
+.grass-cell.lv2 { background: color-mix(in srgb, var(--ok) 55%, var(--surface-2)); }
+.grass-cell.lv3 { background: color-mix(in srgb, var(--ok) 80%, var(--surface-2)); }
+.grass-cell.lv4 { background: var(--ok); }
+.grass-cell.picked { outline: 2px solid var(--text); outline-offset: 0; }
+.grass-legend { display: flex; align-items: center; gap: 3px; justify-content: flex-end; font-size: 10.5px; color: var(--text-3); margin-top: 6px; }
+.grass-legend .grass-cell { width: 10px; height: 10px; }
+.day-chip { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+
+.levelup { position: fixed; inset: 0; z-index: 80; display: grid; place-items: center; background: rgba(0,0,0,.35); animation: rise .2s ease; }
+.levelup-card { position: relative; background: var(--surface); border-radius: 22px; padding: 30px 34px 24px; text-align: center; box-shadow: 0 20px 60px rgba(0,0,0,.3); animation: bounce-in .5s cubic-bezier(.2,1.6,.4,1); max-width: calc(100% - 40px); }
+@keyframes bounce-in { from { transform: scale(.6); opacity: 0; } }
+.levelup-icon { font-size: 64px; animation: flap .45s ease-in-out infinite alternate; display: inline-block; }
+.levelup-small { font-size: 13px; font-weight: 700; color: var(--accent); letter-spacing: .1em; margin-top: 4px; }
+.levelup-card h2 { margin: 4px 0 6px; font-size: 24px; }
+.levelup-card p { margin: 0 0 18px; color: var(--text-2); }
+.levelup-confetti span { position: fixed; top: -40px; font-size: 26px; animation: fall 3.2s linear infinite; }
+@keyframes fall { to { transform: translateY(110vh) rotate(360deg); } }
+
 /* ---------- 기타 ---------- */
 .drop-overlay {
   position: fixed; inset: 0; z-index: 50; display: grid; place-items: center;

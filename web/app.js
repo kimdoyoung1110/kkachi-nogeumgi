@@ -144,6 +144,7 @@ function renderHome() {
   view.innerHTML = `
     <p class="greeting" id="greeting">${esc(greetingText())}</p>
     <section id="upload-area"></section>
+    <section class="card study" id="study" hidden></section>
     <section>
       <div class="section-title"><h2>내 녹음</h2><span class="count" id="rec-count"></span></div>
       <div class="cat-bar" id="cat-bar" role="tablist" aria-label="분류"></div>
@@ -401,6 +402,7 @@ function categoriesWithCounts() {
 }
 
 function inCategory(r) {
+  if (state.day && dayKey(r.created_at) !== state.day) return false;
   if (state.category === CAT_ALL) return true;
   if (state.category === CAT_NONE) return !r.subject;
   return r.subject === state.category;
@@ -414,14 +416,194 @@ function renderCategories() {
   // 고른 분류가 사라졌으면 전체로
   if (state.category !== CAT_ALL && state.category !== CAT_NONE && !cats.some((c) => c.name === state.category)) state.category = CAT_ALL;
   if (state.category === CAT_NONE && !none) state.category = CAT_ALL;
-  if (!cats.length) { bar.innerHTML = ""; return; }
+  if (!cats.length && !state.day) { bar.innerHTML = ""; return; }
   const chip = (value, label, count) => `
     <button class="cat-chip ${state.category === value ? "on" : ""}" role="tab" aria-selected="${state.category === value}" data-cat="${esc(value)}">
       ${esc(label)}<span>${count}</span>
     </button>`;
-  bar.innerHTML = chip(CAT_ALL, "전체", state.recordings.length)
+  const dayChip = state.day
+    ? `<button class="cat-chip on day-chip" data-clear-day>📅 ${esc(fmtDay(state.day))} ✕</button>` : "";
+  bar.innerHTML = dayChip + chip(CAT_ALL, "전체", state.recordings.length)
     + cats.map((c) => chip(c.name, c.name, c.count)).join("")
     + (none ? chip(CAT_NONE, "분류 없음", none) : "");
+}
+
+/* ---------- 공부 기록: 까치 레벨 + 공부 잔디 ---------- */
+
+const LEVELS = [
+  { hours: 0, icon: "🥚", title: "까치 알", line: "첫 강의를 받아쓰면 알을 깨고 나와요" },
+  { hours: 1, icon: "🐣", title: "아기 까치", line: "알을 깨고 나왔어요!" },
+  { hours: 5, icon: "🐥", title: "꼬마 까치", line: "날갯짓을 배우는 중이에요" },
+  { hours: 10, icon: "🐦‍⬛", title: "부지런한 까치", line: "매일매일 물어 나르는 중" },
+  { hours: 25, icon: "📚", title: "똑똑한 까치", line: "이제 제법 아는 게 많아요" },
+  { hours: 50, icon: "🎓", title: "박사 까치", line: "까치 마을에서 소문이 났어요" },
+  { hours: 100, icon: "👑", title: "수석 까치", line: "까치들의 우두머리!" },
+  { hours: 200, icon: "✨", title: "전설의 까치", line: "전설로 남을 공부량이에요" },
+];
+const GRASS_WEEKS = 18;
+
+function dayKey(ts) {
+  const d = new Date(ts * 1000);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function fmtDay(key) {
+  const [y, m, d] = key.split("-").map(Number);
+  const days = ["일", "월", "화", "수", "목", "금", "토"];
+  return `${m}월 ${d}일 (${days[new Date(y, m - 1, d).getDay()]})`;
+}
+
+function fmtHours(sec) {
+  const m = Math.round(sec / 60);
+  if (m < 60) return `${m}분`;
+  return m % 60 ? `${Math.floor(m / 60)}시간 ${m % 60}분` : `${m / 60}시간`;
+}
+
+function studyStats() {
+  // 받아쓰기가 끝난 녹음의 길이만 센다
+  const byDay = new Map();
+  let total = 0;
+  for (const r of state.recordings) {
+    if (r.status !== "done" || !r.duration) continue;
+    const k = dayKey(r.created_at);
+    const v = byDay.get(k) || { sec: 0, count: 0 };
+    v.sec += r.duration;
+    v.count++;
+    byDay.set(k, v);
+    total += r.duration;
+  }
+  // 연속 공부 일수: 오늘(또는 어제)부터 거꾸로
+  let streak = 0;
+  const d = new Date();
+  if (!byDay.has(dayKey(d / 1000))) d.setDate(d.getDate() - 1);
+  while (byDay.has(dayKey(d / 1000))) { streak++; d.setDate(d.getDate() - 1); }
+  const now = new Date();
+  const monthPrefix = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  let month = 0;
+  for (const [k, v] of byDay) if (k.startsWith(monthPrefix)) month += v.sec;
+  return { byDay, total, streak, month };
+}
+
+function levelFor(totalSec) {
+  const h = totalSec / 3600;
+  let i = 0;
+  while (i + 1 < LEVELS.length && h >= LEVELS[i + 1].hours) i++;
+  return i;
+}
+
+function grassLevel(sec) {
+  const m = sec / 60;
+  if (!m) return 0;
+  if (m < 30) return 1;
+  if (m < 60) return 2;
+  if (m < 120) return 3;
+  return 4;
+}
+
+function grassHTML(byDay) {
+  // 월요일 시작 주 단위, 오늘이 마지막 열
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const start = new Date(today);
+  const mondayOffset = (today.getDay() + 6) % 7;
+  start.setDate(today.getDate() - mondayOffset - (GRASS_WEEKS - 1) * 7);
+  const cols = [];
+  const months = [];
+  for (let w = 0; w < GRASS_WEEKS; w++) {
+    const cells = [];
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(start);
+      d.setDate(start.getDate() + w * 7 + i);
+      if (d > today) { cells.push(`<i class="grass-cell future"></i>`); continue; }
+      const k = dayKey(d / 1000);
+      const v = byDay.get(k) || { sec: 0, count: 0 };
+      const tip = v.count ? `${fmtDay(k)} · ${fmtHours(v.sec)} · ${v.count}개` : `${fmtDay(k)} · 쉬는 날`;
+      cells.push(`<i class="grass-cell lv${grassLevel(v.sec)} ${state.day === k ? "picked" : ""}" data-day="${k}" data-min="${Math.round(v.sec / 60)}" title="${tip}"></i>`);
+      if (d.getDate() === 1 || (w === 0 && i === 0)) months[w] = `${d.getMonth() + 1}월`;
+    }
+    cols.push(`<div class="grass-col">${cells.join("")}</div>`);
+  }
+  const monthRow = Array.from({ length: GRASS_WEEKS }, (_, w) => `<span>${months[w] || ""}</span>`).join("");
+  return `
+    <div class="grass-wrap">
+      <div class="grass-days"><span></span><span>월</span><span></span><span>수</span><span></span><span>금</span><span></span><span></span></div>
+      <div>
+        <div class="grass-months">${monthRow}</div>
+        <div class="grass">${cols.join("")}</div>
+      </div>
+    </div>
+    <div class="grass-legend">적게 <i class="grass-cell lv0"></i><i class="grass-cell lv1"></i><i class="grass-cell lv2"></i><i class="grass-cell lv3"></i><i class="grass-cell lv4"></i> 많이</div>`;
+}
+
+let studySig = "";
+function renderStudy() {
+  const el = $("#study");
+  if (!el) return;
+  const st = studyStats();
+  const sig = JSON.stringify([...st.byDay]) + state.day;
+  if (sig === studySig && !el.hidden) return;  // 바뀐 게 없으면 다시 그리지 않음 (목록은 1~5초마다 갱신됨)
+  studySig = sig;
+
+  const li = levelFor(st.total);
+  const lv = LEVELS[li], next = LEVELS[li + 1];
+  const name = state.gift.name ? `${esc(state.gift.name)}의 까치` : "내 까치";
+  const progress = next
+    ? Math.min(100, ((st.total / 3600 - lv.hours) / (next.hours - lv.hours)) * 100)
+    : 100;
+  el.hidden = false;
+  el.innerHTML = `
+    <div class="kk-level">
+      <div class="level-icon" aria-hidden="true">${lv.icon}</div>
+      <div class="level-body">
+        <div class="level-name">${name} · <b>Lv.${li + 1} ${lv.title}</b></div>
+        <div class="level-line">${lv.line}</div>
+        <div class="level-bar"><div style="width:${progress}%"></div></div>
+        <div class="level-next">${next
+          ? `다음 레벨 <b>${next.icon} ${next.title}</b>까지 ${fmtHours(next.hours * 3600 - st.total)}`
+          : "최고 레벨이에요! 🎉"}</div>
+      </div>
+    </div>
+    <div class="study-grass">
+      <div class="study-stats">
+        <span>🔥 <b>${st.streak}일</b> 연속</span>
+        <span>이번 달 <b>${fmtHours(st.month)}</b></span>
+        <span>전체 <b>${fmtHours(st.total)}</b></span>
+      </div>
+      ${grassHTML(st.byDay)}
+    </div>`;
+
+  // 레벨업 축하 (처음 보는 경우엔 지금 레벨을 기억만 한다)
+  let seen = null;
+  try { seen = localStorage.getItem("kkachi.level"); } catch {}
+  if (seen === null) {
+    try { localStorage.setItem("kkachi.level", String(li)); } catch {}
+  } else if (li > Number(seen)) {
+    try { localStorage.setItem("kkachi.level", String(li)); } catch {}
+    celebrateLevel(li);
+  }
+}
+
+function celebrateLevel(li) {
+  const lv = LEVELS[li];
+  const name = state.gift.name ? `${state.gift.name}의 ` : "";
+  nativeNotify("까치가 레벨업했어요! 🎉", `${name}까치가 Lv.${li + 1} ${lv.title}${lv.icon}이(가) 됐어요`);
+  const box = document.createElement("div");
+  box.className = "levelup";
+  const confetti = Array.from({ length: 18 }, (_, i) =>
+    `<span style="left:${(i * 53) % 100}%;animation-delay:${(i % 6) * 0.15}s">${["🎉", "✨", "⭐", "🪶"][i % 4]}</span>`).join("");
+  box.innerHTML = `
+    <div class="levelup-confetti" aria-hidden="true">${confetti}</div>
+    <div class="levelup-card" role="dialog" aria-label="레벨업">
+      <div class="levelup-icon">${lv.icon}</div>
+      <div class="levelup-small">레벨업!</div>
+      <h2>Lv.${li + 1} ${esc(lv.title)}</h2>
+      <p>${esc(lv.line)}</p>
+      <button class="btn btn-primary">고마워 까치야 🐦‍⬛</button>
+    </div>`;
+  document.body.append(box);
+  const close = () => box.remove();
+  box.addEventListener("click", close);
+  setTimeout(close, 12000);
 }
 
 // 받아쓰기가 끝나면 까치가 종이를 물어다 주는 작은 연출
@@ -441,6 +623,7 @@ function renderList() {
   const list = $("#rec-list");
   if (!list) return;
   $("#rec-count").textContent = state.recordings.length ? `${state.recordings.length}개` : "";
+  renderStudy();
   renderCategories();
 
   if (!state.recordings.length) {
@@ -449,7 +632,7 @@ function renderList() {
   }
   const shown = state.recordings.filter(inCategory);
   if (!shown.length) {
-    list.innerHTML = `<div class="empty">이 분류에는 녹음이 없어요.</div>`;
+    list.innerHTML = `<div class="empty">${state.day ? "이 날에는 녹음이 없어요." : "이 분류에는 녹음이 없어요."}</div>`;
     return;
   }
 
@@ -492,8 +675,16 @@ function renderList() {
 }
 
 $("#view").addEventListener("click", async (e) => {
+  if (e.target.closest("[data-clear-day]")) { state.day = null; return renderList(); }
   const chip = e.target.closest(".cat-chip");
   if (chip) return setCategory(chip.dataset.cat);
+  const cell = e.target.closest(".grass-cell[data-day]");
+  if (cell && cell.dataset.min !== "0") {
+    state.day = state.day === cell.dataset.day ? null : cell.dataset.day;
+    renderList();
+    $("#rec-list")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    return;
+  }
   const item = e.target.closest(".rec");
   if (!item) return;
   const id = item.dataset.id;
