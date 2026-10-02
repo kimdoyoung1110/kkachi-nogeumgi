@@ -15,6 +15,7 @@ from typing import Callable, Optional
 import numpy as np
 
 from app import config, segmenter
+from app.numbers import normalize_numbers
 
 log = logging.getLogger(__name__)
 
@@ -208,7 +209,8 @@ class Transcriber:
             lang, text = parse_language(raw, forced)
             if not text or lang is None:
                 continue
-            segments.append(Segment(offset, offset + len(chunk) / sr, lang, apply_replacements(text, replacements)))
+            text = normalize_numbers(apply_replacements(text, replacements))
+            segments.append(Segment(offset, offset + len(chunk) / sr, lang, text))
 
         if align:
             self._align(segments, chunks, progress)
