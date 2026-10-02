@@ -45,3 +45,7 @@ scripts/   설치·실행·업데이트 스크립트
 tests/     테스트 + 테스트용 음성(tests/audio)
 docs/      계획·벤치마크 기록
 ```
+
+## 그림 출처
+- 레벨·연출의 움직이는 이모지: Google [Noto Emoji Animation](https://googlefonts.github.io/noto-emoji-animation/) (CC BY 4.0) — `web/emoji/LICENSE.md`
+- 앱 아이콘: Apple Color Emoji 를 이용해 직접 그림 (`assets/make-icon.swift`)

@@ -352,7 +352,7 @@ function recItemHTML(r) {
   const pct = Math.round((r.progress || 0) * 100);
   const progress = isWorking(r) ? `
     <div class="rec-progress">
-      <div class="rec-progress-top"><span><span class="flap" aria-hidden="true">🐦‍⬛</span> <span class="stage">${esc(r.stage_label)}${r.status === "processing" ? "…" : ""}</span></span><span class="pct">${r.status === "processing" ? pct + "%" : ""}</span></div>
+      <div class="rec-progress-top"><span><img class="inline-emoji" src="emoji/magpie.webp" alt=""> <span class="stage">${esc(r.stage_label)}${r.status === "processing" ? "…" : ""}</span></span><span class="pct">${r.status === "processing" ? pct + "%" : ""}</span></div>
       <div class="bar ${r.status === "queued" ? "indeterminate" : ""}"><div style="width:${pct}%"></div></div>
     </div>` : "";
   const interrupted = r.status === "recording" && r.stalled && r.id !== recorder.id ? `
@@ -430,16 +430,27 @@ function renderCategories() {
 
 /* ---------- 공부 기록: 까치 레벨 + 공부 잔디 ---------- */
 
+// 그림: Google Noto 애니메이션 이모지 (web/emoji, CC BY 4.0). 4단계부터는 까치가 계속 주인공이고 배지가 붙는다
 const LEVELS = [
-  { hours: 0, icon: "🥚", title: "까치 알", line: "첫 강의를 받아쓰면 알을 깨고 나와요" },
-  { hours: 1, icon: "🐣", title: "아기 까치", line: "알을 깨고 나왔어요!" },
-  { hours: 5, icon: "🐥", title: "꼬마 까치", line: "날갯짓을 배우는 중이에요" },
-  { hours: 10, icon: "🐦‍⬛", title: "부지런한 까치", line: "매일매일 물어 나르는 중" },
-  { hours: 25, icon: "📚", title: "똑똑한 까치", line: "이제 제법 아는 게 많아요" },
-  { hours: 50, icon: "🎓", title: "박사 까치", line: "까치 마을에서 소문이 났어요" },
-  { hours: 100, icon: "👑", title: "수석 까치", line: "까치들의 우두머리!" },
-  { hours: 200, icon: "✨", title: "전설의 까치", line: "전설로 남을 공부량이에요" },
+  { hours: 0, icon: "🥚", main: "egg.svg", title: "까치 알", line: "첫 강의를 받아쓰면 알을 깨고 나와요" },
+  { hours: 1, icon: "🐣", main: "hatching.webp", title: "아기 까치", line: "알을 깨고 나왔어요!" },
+  { hours: 5, icon: "🐥", main: "chick.webp", title: "꼬마 까치", line: "날갯짓을 배우는 중이에요" },
+  { hours: 10, icon: "🐦‍⬛", main: "magpie.webp", title: "부지런한 까치", line: "매일매일 물어 나르는 중" },
+  { hours: 25, icon: "📚", main: "magpie.webp", badge: "books.webp", title: "똑똑한 까치", line: "책을 물고 다니기 시작했어요" },
+  { hours: 50, icon: "🎓", main: "magpie.webp", badge: "cap.webp", title: "박사 까치", line: "학사모를 썼어요! 까치 마을에 소문이 났어요" },
+  { hours: 100, icon: "👑", main: "magpie.webp", badge: "crown.webp", title: "수석 까치", line: "까치들의 우두머리!" },
+  { hours: 200, icon: "✨", main: "magpie.webp", badge: "crown.webp", aura: true, title: "전설의 까치", line: "전설로 남을 공부량이에요" },
 ];
+
+function levelArt(li, size = "") {
+  const lv = LEVELS[li];
+  return `
+    <div class="kk-art ${size} lv${li}" aria-hidden="true">
+      ${lv.aura ? `<img class="kk-aura" src="emoji/sparkles.webp" alt="">` : ""}
+      <img class="kk-main ${lv.main === "egg.svg" ? "wobble" : ""}" src="emoji/${lv.main}" alt="">
+      ${lv.badge ? `<img class="kk-badge" src="emoji/${lv.badge}" alt="">` : ""}
+    </div>`;
+}
 const GRASS_WEEKS = 18;
 
 function dayKey(ts) {
@@ -553,19 +564,19 @@ function renderStudy() {
   el.hidden = false;
   el.innerHTML = `
     <div class="kk-level">
-      <div class="level-icon" aria-hidden="true">${lv.icon}</div>
+      <div class="level-icon">${levelArt(li)}</div>
       <div class="level-body">
         <div class="level-name">${name} · <b>Lv.${li + 1} ${lv.title}</b></div>
         <div class="level-line">${lv.line}</div>
         <div class="level-bar"><div style="width:${progress}%"></div></div>
         <div class="level-next">${next
-          ? `다음 레벨 <b>${next.icon} ${next.title}</b>까지 ${fmtHours(next.hours * 3600 - st.total)}`
+          ? `다음 레벨 <b>${next.title}</b>까지 ${fmtHours(next.hours * 3600 - st.total)}`
           : "최고 레벨이에요! 🎉"}</div>
       </div>
     </div>
     <div class="study-grass">
       <div class="study-stats">
-        <span>🔥 <b>${st.streak}일</b> 연속</span>
+        <span><img class="inline-emoji" src="emoji/fire.webp" alt="🔥"> <b>${st.streak}일</b> 연속</span>
         <span>이번 달 <b>${fmtHours(st.month)}</b></span>
         <span>전체 <b>${fmtHours(st.total)}</b></span>
       </div>
@@ -594,7 +605,8 @@ function celebrateLevel(li) {
   box.innerHTML = `
     <div class="levelup-confetti" aria-hidden="true">${confetti}</div>
     <div class="levelup-card" role="dialog" aria-label="레벨업">
-      <div class="levelup-icon">${lv.icon}</div>
+      <img class="levelup-party" src="emoji/party.webp" alt="">
+      ${levelArt(li, "big")}
       <div class="levelup-small">레벨업!</div>
       <h2>Lv.${li + 1} ${esc(lv.title)}</h2>
       <p>${esc(lv.line)}</p>
@@ -612,7 +624,7 @@ function deliver(r) {
   if (!el) return;
   const bird = document.createElement("span");
   bird.className = "delivery";
-  bird.textContent = "🐦‍⬛📜";
+  bird.innerHTML = `<img src="emoji/magpie.webp" alt="">📜`;
   el.append(bird);
   el.classList.add("delivered");
   setTimeout(() => { bird.remove(); el.classList.remove("delivered"); }, 2600);
