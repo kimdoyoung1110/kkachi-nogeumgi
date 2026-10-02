@@ -1,6 +1,8 @@
-"""선물 설정: 여자친구 이름과 편지를 이 맥에만 저장한다 (저장소에는 올라가지 않음).
+"""선물 설정: 여자친구 이름(애칭)을 이 맥에만 저장한다 (저장소에는 올라가지 않음).
 
-    .venv/bin/python -m app.gift          # 물어보는 대로 입력
+화면 이름이 "○○의 까치녹음기"가 되고, 시간대별 인사와 받아쓰기 끝남 알림에서 이름을 불러준다.
+
+    .venv/bin/python -m app.gift          # 이름 입력
     .venv/bin/python -m app.gift --show   # 지금 저장된 내용 보기
     .venv/bin/python -m app.gift --clear  # 지우기
 
@@ -25,29 +27,12 @@ def main() -> int:
         print("지웠어요.")
         return 0
 
-    print("화면 인사에 쓸 이름이나 애칭 (예: 지은):")
+    print("화면 인사와 알림에 쓸 이름이나 애칭 (예: 지은):")
     name = input("> ").strip()
-    print("편지에 적을 보내는 사람 이름 (예: 도영):")
-    sender = input("> ").strip()
-    print("편지 내용. 여러 줄로 써도 돼요. 다 쓰면 빈 줄에서 Enter 두 번:")
-    lines, blank = [], 0
-    while True:
-        line = input()
-        if not line.strip():
-            blank += 1
-            if blank >= 2 or (blank and not lines):
-                break
-            lines.append("")
-            continue
-        blank = 0
-        lines.append(line)
-    letter = "\n".join(lines).strip()
-
     config.DATA_DIR.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"name": name, "from": sender, "letter": letter}, ensure_ascii=False, indent=2),
-                    encoding="utf-8")
+    path.write_text(json.dumps({"name": name}, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"저장했어요: {path}")
-    print("다음에 까치녹음기를 켜면 처음 한 번 편지가 떠요. (⚙ › 편지 다시 보기 로도 볼 수 있어요)")
+    print("까치녹음기를 다시 켜면 적용돼요.")
     return 0
 
 

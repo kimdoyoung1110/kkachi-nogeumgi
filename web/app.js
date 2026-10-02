@@ -93,7 +93,7 @@ function nativeNotify(title, body, hash) {
   try { window.webkit?.messageHandlers?.kkachi?.postMessage({ type: "notify", title, body, hash }); } catch {}
 }
 
-// 선물 설정 (이 맥의 gift.json: 이름·편지). 없으면 빈 객체
+// 선물 설정 (이 맥의 gift.json: 이름). 없으면 빈 객체
 state.gift = {};
 
 function greetingText() {
@@ -434,7 +434,7 @@ function deliver(r) {
   el.append(bird);
   el.classList.add("delivered");
   setTimeout(() => { bird.remove(); el.classList.remove("delivered"); }, 2600);
-  toast(`까치가 ‘${r.title}’ 받아쓴 걸 물어왔어요!`);
+  toast(`까치가 ‘${r.title}’ 받아쓴 걸 물어왔어요! 칭찬해 주세요 🐦‍⬛`);
 }
 
 function renderList() {
@@ -1698,7 +1698,6 @@ async function settingsMenu(anchor) {
   openMenu(anchor, [
     { label: "업데이트 확인", icon: "↻", run: checkUpdate },
     { label: "사용법 보기", icon: "?", run: () => showGuide(0) },
-    ...(state.gift.letter ? [{ label: "편지 다시 보기", icon: "💌", run: showLetter }] : []),
     { label: "문제 신고용 로그 저장", icon: "🧾", run: saveLogs },
     "-",
     { label: vLabel, icon: "ⓘ", disabled: true, run: () => {} },
@@ -1775,39 +1774,8 @@ const GUIDE = [
 let guideStep = 0;
 let guidePages = GUIDE;
 
-function letterPage() {
-  const g = state.gift;
-  if (!g.letter) return null;
-  return {
-    icon: "💌", title: g.name ? `${esc(g.name)}에게` : "편지", letter: true,
-    text: esc(g.letter).replace(/\n/g, "<br>") + (g.from ? `<span class="letter-from">— ${esc(g.from)}</span>` : ""),
-  };
-}
-
-function letterKey() {
-  // 편지 내용이 바뀌면 다시 한 번 보여주기 위해 내용으로 키를 만든다
-  let h = 0;
-  for (const ch of state.gift.letter || "") h = (h * 31 + ch.charCodeAt(0)) | 0;
-  return `kkachi.letter.${h}`;
-}
-
-function markLetterSeen() {
-  try { if (state.gift.letter) localStorage.setItem(letterKey(), "seen"); } catch {}
-}
-
-function showLetter() {
-  const page = letterPage();
-  if (!page) return;
-  guidePages = [page];
-  guideStep = 0;
-  renderGuide();
-  const dlg = $("#guide-dialog");
-  if (!dlg.open) dlg.showModal();
-}
-
 function showGuide(step = 0) {
-  const page = letterPage();
-  guidePages = page ? [...GUIDE, page] : GUIDE;
+  guidePages = GUIDE;
   guideStep = step;
   renderGuide();
   const dlg = $("#guide-dialog");
@@ -1816,14 +1784,11 @@ function showGuide(step = 0) {
 
 function renderGuide() {
   const g = guidePages[guideStep];
-  const dlg = $("#guide-dialog");
-  dlg.classList.toggle("letter-mode", !!g.letter);
   $("#guide-steps").innerHTML = `<div class="guide-icon">${g.icon}</div><h2>${g.title}</h2><p>${g.text}</p>`;
   $("#guide-dots").innerHTML = guidePages.length > 1
     ? guidePages.map((_, i) => `<span class="${i === guideStep ? "on" : ""}"></span>`).join("") : "";
   $("#guide-prev").style.visibility = guideStep ? "visible" : "hidden";
-  const last = guideStep === guidePages.length - 1;
-  $("#guide-next").textContent = last ? (g.letter ? "고마워 💛" : "시작하기") : (guidePages[guideStep + 1].letter ? "마지막 한 장 💌" : "다음");
+  $("#guide-next").textContent = guideStep === guidePages.length - 1 ? "시작하기" : "다음";
 }
 
 $("#guide-prev").addEventListener("click", () => { guideStep = Math.max(0, guideStep - 1); renderGuide(); });
@@ -1831,21 +1796,13 @@ $("#guide-next").addEventListener("click", () => {
   if (guideStep < guidePages.length - 1) { guideStep++; renderGuide(); return; }
   $("#guide-dialog").close();
   try { localStorage.setItem("kkachi.guide.v1", "seen"); } catch {}
-  if (guidePages[guideStep].letter) markLetterSeen();
 });
-$("#guide-dialog").addEventListener("cancel", () => {
-  try { localStorage.setItem("kkachi.guide.v1", "seen"); } catch {}
-  if (guidePages[guideStep]?.letter) markLetterSeen();
-});
+$("#guide-dialog").addEventListener("cancel", () => { try { localStorage.setItem("kkachi.guide.v1", "seen"); } catch {} });
 
 function maybeShowGuide() {
-  let seen = false, letterSeen = true;
-  try {
-    seen = localStorage.getItem("kkachi.guide.v1") === "seen";
-    letterSeen = !state.gift.letter || localStorage.getItem(letterKey()) === "seen";
-  } catch {}
+  let seen = false;
+  try { seen = localStorage.getItem("kkachi.guide.v1") === "seen"; } catch {}
   if (!seen) showGuide(0);
-  else if (!letterSeen) showLetter();   // 안내는 봤지만 편지가 새로 생긴 경우
 }
 
 $("#btn-settings").addEventListener("click", (e) => { e.stopPropagation(); settingsMenu(e.currentTarget); });

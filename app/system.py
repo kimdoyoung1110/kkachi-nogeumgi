@@ -150,7 +150,7 @@ def power_status() -> dict[str, Any]:
     return parse_pmset(out)
 
 
-# ---- 선물 설정 (저장소 밖 gift.json: 이름·편지) ----
+# ---- 선물 설정 (저장소 밖 gift.json: 이름) ----
 
 def load_gift(data_dir: Path) -> dict[str, str]:
     import json
@@ -159,7 +159,7 @@ def load_gift(data_dir: Path) -> dict[str, str]:
     except Exception:
         return {}
     out = {}
-    for key, limit in (("name", 20), ("letter", 2000), ("from", 20)):
+    for key, limit in (("name", 20),):
         v = raw.get(key)
         if isinstance(v, str) and v.strip():
             out[key] = v.strip()[:limit]

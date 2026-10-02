@@ -29,6 +29,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     var downloads: [WKDownload: URL] = [:]
     var lastStatus: [String: String] = [:]   // 녹음별 마지막 상태 (받아쓰기 끝남 알림용)
     var tick = 0
+    var unseen = 0                           // 확인 안 한 '받아쓰기 끝남' 개수 (Dock 배지)
+    lazy var nickname: String? = {           // gift.json 의 이름 (알림에서 불러줌)
+        guard let (code, data) = request("GET", "api/app/gift"), code == 200,
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let name = obj["name"] as? String, !name.isEmpty else { return nil }
+        return name
+    }()
 
     lazy var repo: String = {
         let file = Bundle.main.url(forResource: "repo_path", withExtension: nil)
@@ -334,11 +341,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
             if first || before == nil || before == status { continue }
             let title = (r["title"] as? String) ?? "녹음"
             if status == "done" && (before == "processing" || before == "queued") {
-                notify(title: "받아쓰기가 끝났어요 🐦‍⬛", body: "‘\(title)’ 를 열어볼까요?", hash: "#/r/\(id)")
+                announceDone(id: id, title: title)
             } else if status == "failed" && before == "processing" {
                 notify(title: "받아쓰기를 못 했어요", body: "‘\(title)’ — 앱에서 [다시 시도]를 눌러주세요.", hash: "#/")
             }
         }
+    }
+
+    /// 받아쓰기가 끝나면 까치가 관심을 달라고 한다: 알림(항상) + Dock 통통 + 빨간 숫자
+    func announceDone(id: String, title: String) {
+        let call = nickname.map { "\($0), " } ?? ""
+        let lines: [(String, String)] = [
+            ("까치가 다 물어왔어요! 🐦‍⬛", "\(call)‘\(title)’ 받아쓰기 끝났어요. 칭찬해 주세요 🥺"),
+            ("까치: 다 했어요… 🐦‍⬛", "\(call)‘\(title)’ 다 받아썼어요. 쓰담쓰담 해주세요"),
+            ("받아쓰기 끝! 🐦‍⬛", "\(call)까치가 ‘\(title)’ 들고 기다리고 있어요. 얼른 와서 봐주세요 👀"),
+            ("까치가 부르고 있어요 🐦‍⬛", "\(call)‘\(title)’ 정리 다 했어요! 잘했다고 한마디만 해주세요 🥹"),
+        ]
+        let (t, b) = lines.randomElement()!
+        notify(title: t, body: b, hash: "#/r/\(id)", force: true)
+        if !userIsLooking {
+            unseen += 1
+            NSApp.dockTile.badgeLabel = "\(unseen)"
+            NSApp.requestUserAttention(.informationalRequest)   // Dock 아이콘 한 번 통통
+        }
+    }
+
+    func applicationDidBecomeActive(_ notification: Notification) {
+        unseen = 0
+        NSApp.dockTile.badgeLabel = nil
     }
 
     // 화면에서 보내는 알림 요청 (예: 녹음 중 소리가 안 들릴 때)

@@ -476,7 +476,7 @@ def test_gift_config(make_client, tmp_path):
     client, _ = make_client(FakePipeline())
     with client:
         assert client.get("/api/app/gift").json() == {}
-        (tmp_path / "gift.json").write_text(json.dumps({"name": " 지은 ", "letter": "안녕\n사랑해", "from": "도영", "x": 1}))
-        assert client.get("/api/app/gift").json() == {"name": "지은", "letter": "안녕\n사랑해", "from": "도영"}
+        (tmp_path / "gift.json").write_text(json.dumps({"name": " 지은 ", "letter": "예전 버전 편지", "x": 1}))
+        assert client.get("/api/app/gift").json() == {"name": "지은"}
         (tmp_path / "gift.json").write_text("{깨진 파일")
         assert client.get("/api/app/gift").json() == {}

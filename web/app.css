@@ -394,16 +394,6 @@ mark { background: color-mix(in srgb, var(--warn) 28%, transparent); color: inhe
 .utt.starred { background: color-mix(in srgb, var(--warn-soft) 70%, transparent); }
 .star-toggle span { font-weight: 600; }
 
-/* 편지 */
-.guide.letter-mode { background: #fffaf0; color: #3b2f1e; }
-.guide.letter-mode h2 { font-family: "AppleMyungjo", "Nanum Myeongjo", serif; }
-.guide.letter-mode p { font-family: "AppleMyungjo", "Nanum Myeongjo", serif; color: #4a3b26; font-size: 16px; line-height: 1.9; text-align: left; }
-.letter-from { display: block; text-align: right; margin-top: 14px; font-weight: 600; }
-@media (prefers-color-scheme: dark) {
-  .guide.letter-mode { background: #2b241a; color: #f3e6cf; }
-  .guide.letter-mode p { color: #e8d9bd; }
-}
-
 /* ---------- 기타 ---------- */
 .drop-overlay {
   position: fixed; inset: 0; z-index: 50; display: grid; place-items: center;
