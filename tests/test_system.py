@@ -76,3 +76,43 @@ def test_parse_pmset():
     assert system.parse_pmset("Now drawing from 'AC Power'\n -InternalBattery-0 (id=1)\t100%; charged;") == \
         {"on_ac": True, "percent": 100}
     assert system.parse_pmset("Now drawing from 'AC Power'\n") == {"on_ac": True, "percent": None}
+
+
+def _notes(*ids):
+    import json
+    return json.dumps([{"id": i, "date": i, "title": f"{i} 업데이트",
+                        "items": [{"icon": "✨", "title": f"{i} 기능", "text": "설명"}]} for i in ids],
+                      ensure_ascii=False)
+
+
+def test_update_notes_first_upgrade_from_version_without_notes(repos, tmp_path):
+    """노트 기능이 없던 버전에서 업데이트한 직후: 새 버전의 노트를 '안 본 것'으로 보여준다."""
+    dev, installed = repos
+    data = tmp_path / "data"
+    (dev / "whatsnew.json").write_text(_notes("2026-10-07"))
+    git(dev, "add", ".")
+    git(dev, "commit", "-qm", "노트 추가")
+    git(dev, "push", "-q", "origin", "HEAD:main")
+
+    r = system.check_update()
+    assert [n["id"] for n in r["notes"]] == ["2026-10-07"]
+    # 예전 버전의 업데이트 코드는 노트를 모름 → data_dir 없이 업데이트됐다고 친다
+    assert system.apply_update()["ok"]
+    assert [n["id"] for n in system.unseen_notes(data)] == ["2026-10-07"]
+    system.mark_notes_seen(data)
+    assert system.unseen_notes(data) == []
+
+    # 다음 업데이트: 새로 추가된 노트만
+    (dev / "whatsnew.json").write_text(_notes("2026-10-20", "2026-10-07"))
+    git(dev, "commit", "-qam", "다음 버전")
+    git(dev, "push", "-q", "origin", "HEAD:main")
+    assert [n["id"] for n in system.check_update()["notes"]] == ["2026-10-20"]
+    assert system.apply_update(data)["ok"]
+    assert [n["id"] for n in system.unseen_notes(data)] == ["2026-10-20"]
+
+
+def test_update_notes_fresh_install_shows_nothing(repos, tmp_path):
+    dev, installed = repos
+    (installed / "whatsnew.json").write_text(_notes("2026-10-07"))
+    assert system.unseen_notes(tmp_path / "data") == []
+    assert [n["id"] for n in system.load_notes()] == ["2026-10-07"]

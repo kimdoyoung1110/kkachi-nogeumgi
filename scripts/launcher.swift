@@ -9,15 +9,18 @@
 // 셸 스크립트로 서버를 띄우면 스크립트가 끝날 때 macOS 가 앱에 딸린 프로세스를 정리하면서
 // 서버까지 꺼버린다 (새 세션으로 띄워도 마찬가지였음). 그래서 앱이 계속 살아 있는 구조로 만들었다.
 //
+// - '다른 앱 소리 녹음'은 웹 화면에서 할 수 없어서 실행기가 직접 받는다 (capture.swift).
+//
 // 빌드: scripts/build_launcher.sh  →  assets/kkachi-launcher
 
 import AppKit
+import ScreenCaptureKit
 import UserNotifications
 import WebKit
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     WKUIDelegate, WKNavigationDelegate, WKDownloadDelegate, WKScriptMessageHandler,
-    UNUserNotificationCenterDelegate {
+    WKScriptMessageHandlerWithReply, UNUserNotificationCenterDelegate {
     let port = ProcessInfo.processInfo.environment["KKACHI_PORT"] ?? "8765"
     lazy var base = URL(string: "http://127.0.0.1:\(port)/")!
     var server: Process?
@@ -30,6 +33,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     var lastFinished: [String: Double]?      // 녹음별 마지막 '받아쓰기 끝난 시각' (알림용). nil = 아직 한 번도 안 봄
     var tick = 0
     var unseen = 0                           // 확인 안 한 '받아쓰기 끝남' 개수 (Dock 배지)
+    var capture: AudioCapture?               // 다른 앱 소리 녹음 중이면 있음
     lazy var nickname: String? = {           // gift.json 의 이름 (알림에서 불러줌)
         guard let (code, data) = request("GET", "api/app/gift"), code == 200,
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -102,6 +106,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
             a.addButton(withTitle: "취소")
             if a.runModal() != .alertFirstButtonReturn { return .terminateCancel }
         }
+        if let c = capture {   // 앱 소리 녹음 중이면 남은 조각을 보내고 끈다
+            c.stop(timeout: 8) { [weak self] in
+                self?.capture = nil
+                self?.stopServer()
+                NSApp.reply(toApplicationShouldTerminate: true)
+            }
+            return .terminateLater
+        }
         stopServer()
         return .terminateNow
     }
@@ -114,6 +126,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         config.mediaTypesRequiringUserActionForPlayback = []
         config.applicationNameForUserAgent = "KkachiApp/1.0"   // 화면이 앱 창 안인지 알 수 있게
         config.userContentController.add(self, name: "kkachi") // 화면 → 앱: 알림 보내기
+        // 화면 → 앱: 답을 받아야 하는 요청 (앱 소리 녹음, 크롬으로 열기)
+        config.userContentController.addScriptMessageHandler(self, contentWorld: .page, name: "kkachiCall")
+        let native = "window.KKACHI_NATIVE = { capture: true, mic: \(AudioCapture.micSupported) };"
+        config.userContentController.addUserScript(
+            WKUserScript(source: native, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         web = WKWebView(frame: .zero, configuration: config)
         web.uiDelegate = self
         web.navigationDelegate = self
@@ -383,6 +400,111 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                hash: body["hash"] as? String)
     }
 
+    // MARK: 화면 ↔ 앱: 다른 앱 소리 녹음, 크롬으로 열기
+
+    func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage,
+                               replyHandler: @escaping (Any?, String?) -> Void) {
+        guard let body = message.body as? [String: Any], let type = body["type"] as? String else {
+            replyHandler(nil, "잘못된 요청"); return
+        }
+        switch type {
+        case "capture-apps":
+            let permitted = CGPreflightScreenCaptureAccess()
+            replyHandler(["apps": AudioCapture.appList(), "permitted": permitted,
+                          "mic": AudioCapture.micSupported], nil)
+
+        case "capture-permission":
+            // 처음엔 맥이 허용 창을 띄우고, 이미 거절했으면 설정 화면을 연다
+            if !CGRequestScreenCaptureAccess() {
+                NSWorkspace.shared.open(URL(string:
+                    "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
+            }
+            replyHandler(["permitted": CGPreflightScreenCaptureAccess()], nil)
+
+        case "capture-start":
+            guard capture == nil else { replyHandler(["ok": false, "message": "이미 녹음 중이에요."], nil); return }
+            guard let id = body["id"] as? String, id.range(of: "^[A-Za-z0-9]+$", options: .regularExpression) != nil
+            else { replyHandler(["ok": false, "message": "잘못된 녹음이에요."], nil); return }
+            let bundle = body["bundle"] as? String
+            let c = AudioCapture(recId: id, base: base, appName: body["name"] as? String ?? "맥 전체",
+                                 withMic: body["mic"] as? Bool ?? false)
+            c.onLevel = { [weak self] info in self?.sendToPage(["type": "capture-level"].merging(info) { a, _ in a }) }
+            c.onEnded = { [weak self, weak c] msg in
+                guard let self, let c, self.capture === c else { return }
+                self.capture = nil
+                self.sendToPage(["type": "capture-ended", "message": msg])
+                self.notify(title: "녹음이 멈췄어요", body: msg, hash: "#/")
+            }
+            capture = c
+            Task { @MainActor in
+                do {
+                    try await c.start(bundle: bundle?.isEmpty == false ? bundle : nil)
+                    replyHandler(["ok": true], nil)
+                } catch {
+                    if self.capture === c { self.capture = nil }
+                    c.stop(timeout: 0) {}
+                    replyHandler(["ok": false, "message": Self.captureMessage(error)], nil)
+                }
+            }
+
+        case "capture-pause", "capture-resume":
+            capture?.setPaused(type == "capture-pause")
+            replyHandler(["ok": capture != nil], nil)
+
+        case "capture-stop":
+            guard let c = capture else { replyHandler(["ok": true], nil); return }
+            c.stop { [weak self] in
+                if self?.capture === c { self?.capture = nil }
+                replyHandler(["ok": true], nil)
+            }
+
+        case "capture-status":
+            replyHandler(capture?.status ?? NSNull(), nil)
+
+        case "open-settings":
+            // 시스템 설정의 개인정보 보호 화면 (정해 둔 것만)
+            let panes = ["files": "Privacy_AllFiles", "screen": "Privacy_ScreenCapture", "mic": "Privacy_Microphone"]
+            if let pane = panes[body["pane"] as? String ?? ""],
+               let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)") {
+                NSWorkspace.shared.open(url)
+                replyHandler(["ok": true], nil)
+            } else {
+                replyHandler(["ok": false], nil)
+            }
+
+        case "open-chrome":
+            var url = base
+            if let hash = body["hash"] as? String, hash.range(of: "^#/[A-Za-z0-9/_-]*$", options: .regularExpression) != nil {
+                url = URL(string: base.absoluteString + hash) ?? base
+            }
+            if let chrome = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.google.Chrome") {
+                NSWorkspace.shared.open([url], withApplicationAt: chrome, configuration: NSWorkspace.OpenConfiguration())
+                replyHandler(["ok": true], nil)
+            } else {
+                NSWorkspace.shared.open(url)
+                replyHandler(["ok": false], nil)
+            }
+
+        default:
+            replyHandler(nil, "모르는 요청")
+        }
+    }
+
+    static func captureMessage(_ error: Error) -> String {
+        if let e = error as? CaptureError { return e.message }
+        let ns = error as NSError
+        if (ns.domain == SCStreamErrorDomain && ns.code == SCStreamError.userDeclined.rawValue) || !CGPreflightScreenCaptureAccess() {
+            return "화면 및 시스템 오디오 녹음 권한이 필요해요. 시스템 설정 › 개인정보 보호 및 보안 › 화면 및 시스템 오디오 녹음에서 '까치녹음기'를 켜고, 까치녹음기를 껐다 켜주세요."
+        }
+        return "앱 소리를 녹음하지 못했어요 (\(error.localizedDescription))."
+    }
+
+    func sendToPage(_ event: [String: Any]) {
+        guard let data = try? JSONSerialization.data(withJSONObject: event),
+              let json = String(data: data, encoding: .utf8) else { return }
+        web.evaluateJavaScript("window.kkachiNative && window.kkachiNative(\(json))")
+    }
+
     // 알림을 누르면 창을 열고 그 화면으로
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
                                 withCompletionHandler done: @escaping () -> Void) {
@@ -494,8 +616,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     }
 }
 
-let app = NSApplication.shared
-let delegate = AppDelegate()
-app.delegate = delegate
-app.setActivationPolicy(.regular)
-app.run()
+@main
+enum Main {
+    static func main() {
+        let app = NSApplication.shared
+        let delegate = AppDelegate()
+        app.delegate = delegate
+        app.setActivationPolicy(.regular)
+        app.run()
+    }
+}

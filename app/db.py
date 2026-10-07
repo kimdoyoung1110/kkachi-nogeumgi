@@ -71,6 +71,16 @@ CREATE TABLE IF NOT EXISTS marks (
 );
 CREATE INDEX IF NOT EXISTS marks_rec ON marks(recording_id, t);
 
+-- 녹음 중에 적은 메모 (그 시간에 말하던 문단 옆에 보여준다)
+CREATE TABLE IF NOT EXISTS notes (
+    id           INTEGER PRIMARY KEY,
+    recording_id TEXT NOT NULL REFERENCES recordings(id) ON DELETE CASCADE,
+    t            REAL NOT NULL,
+    text         TEXT NOT NULL,
+    created_at   REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS notes_rec ON notes(recording_id, t);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS utterances_fts USING fts5(
     text, content='utterances', content_rowid='id', tokenize='trigram'
 );
@@ -125,15 +135,17 @@ class Database:
         replacements: Optional[dict[str, str]] = None,
         subject: Optional[str] = None,
         rec_id: Optional[str] = None,
+        created_at: Optional[float] = None,
+        origin: Optional[str] = None,
     ) -> dict[str, Any]:
         rec_id = rec_id or uuid.uuid4().hex[:12]
         with self.conn() as c:
             c.execute(
                 "INSERT INTO recordings (id, title, created_at, source, file_name, language, num_speakers,"
-                " hotwords, replacements, subject) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                (rec_id, title, time.time(), source, file_name, language, num_speakers,
+                " hotwords, replacements, subject, origin) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (rec_id, title, created_at or time.time(), source, file_name, language, num_speakers,
                  json.dumps(hotwords or [], ensure_ascii=False),
-                 json.dumps(replacements or {}, ensure_ascii=False), subject),
+                 json.dumps(replacements or {}, ensure_ascii=False), subject, origin),
             )
         return self.get_recording(rec_id)
 
@@ -141,6 +153,12 @@ class Database:
         with self.conn() as c:
             row = c.execute("SELECT * FROM recordings WHERE id = ?", (rec_id,)).fetchone()
         return _recording(row) if row else None
+
+    def origins(self, prefix: str) -> set[str]:
+        """가져온 녹음의 출처 표시 (예: 'voicememo:<id>') → 같은 걸 두 번 가져오지 않게"""
+        with self.conn() as c:
+            rows = c.execute("SELECT origin FROM recordings WHERE origin LIKE ?", (prefix + "%",)).fetchall()
+        return {r["origin"] for r in rows}
 
     def list_recordings(self) -> list[dict[str, Any]]:
         with self.conn() as c:
@@ -320,6 +338,27 @@ class Database:
             rows = c.execute("SELECT t FROM marks WHERE recording_id = ? ORDER BY t", (rec_id,)).fetchall()
         return [r["t"] for r in rows]
 
+    # ---- 녹음 중 메모 ----
+
+    def add_note(self, rec_id: str, t: float, text: str) -> None:
+        with self.conn() as c:
+            c.execute("INSERT INTO notes (recording_id, t, text, created_at) VALUES (?,?,?,?)",
+                      (rec_id, t, text, time.time()))
+
+    def update_note(self, rec_id: str, note_id: int, text: str) -> bool:
+        with self.conn() as c:
+            return c.execute("UPDATE notes SET text = ? WHERE id = ? AND recording_id = ?",
+                             (text, note_id, rec_id)).rowcount > 0
+
+    def delete_note(self, rec_id: str, note_id: int) -> bool:
+        with self.conn() as c:
+            return c.execute("DELETE FROM notes WHERE id = ? AND recording_id = ?", (note_id, rec_id)).rowcount > 0
+
+    def list_notes(self, rec_id: str) -> list[dict[str, Any]]:
+        with self.conn() as c:
+            rows = c.execute("SELECT id, t, text FROM notes WHERE recording_id = ? ORDER BY t, id", (rec_id,)).fetchall()
+        return [dict(r) for r in rows]
+
     def get_transcript(self, rec_id: str) -> dict[str, Any]:
         with self.conn() as c:
             speakers = c.execute(
@@ -332,6 +371,7 @@ class Database:
             "speakers": [dict(s) for s in speakers],
             "utterances": [_utterance(u) for u in utts],
             "marks": self.list_marks(rec_id),
+            "notes": self.list_notes(rec_id),
         }
 
 
@@ -343,6 +383,8 @@ def _migrate(c: sqlite3.Connection) -> None:
     cols = {r["name"] for r in c.execute("PRAGMA table_info(recordings)")}
     if "finished_at" not in cols:
         c.execute("ALTER TABLE recordings ADD COLUMN finished_at REAL")
+    if "origin" not in cols:
+        c.execute("ALTER TABLE recordings ADD COLUMN origin TEXT")
 
 
 def _utterance(row: sqlite3.Row) -> dict[str, Any]:

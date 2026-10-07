@@ -46,12 +46,29 @@ def _names(transcript: dict[str, Any]) -> dict[int, str]:
     return {s["idx"]: s["name"] for s in transcript["speakers"]}
 
 
+def _notes_by_utt(transcript: dict[str, Any]) -> dict[int, list[str]]:
+    """녹음 중 메모 → 그 시간에 말하던 문단 번호(순서)별 메모 글"""
+    utts = transcript["utterances"]
+    out: dict[int, list[str]] = {}
+    for n in transcript.get("notes", []):
+        i = 0
+        for j, u in enumerate(utts):
+            if u["start"] <= n["t"] + 0.3:
+                i = j
+            else:
+                break
+        out.setdefault(i, []).append(n["text"])
+    return out
+
+
 def to_txt(rec: dict[str, Any], transcript: dict[str, Any]) -> str:
     names = _names(transcript)
+    notes = _notes_by_utt(transcript)
     lines = [rec["title"], " · ".join(x for x in (_date(rec["created_at"]), _duration(rec["duration"])) if x), ""]
-    for u in transcript["utterances"]:
+    for i, u in enumerate(transcript["utterances"]):
         lines.append(f"[{clock(u['start'])}] {names.get(u['speaker'], f'화자 {u['speaker'] + 1}')}")
         lines.append(u["text"])
+        lines += [f"📝 메모: {t}" for t in notes.get(i, [])]
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 
@@ -61,10 +78,12 @@ def to_md(rec: dict[str, Any], transcript: dict[str, Any]) -> str:
     meta = [_date(rec["created_at"]), _duration(rec["duration"])]
     if rec.get("subject"):
         meta.append(f"과목: {rec['subject']}")
+    notes = _notes_by_utt(transcript)
     out = [f"# {rec['title']}", "", " · ".join(x for x in meta if x), ""]
-    for u in transcript["utterances"]:
+    for i, u in enumerate(transcript["utterances"]):
         name = names.get(u["speaker"], f"화자 {u['speaker'] + 1}")
         out += [f"**{name}** `{clock(u['start'])}`", "", u["text"], ""]
+        out += [f"> 📝 {t}\n" for t in notes.get(i, [])]
     return "\n".join(out).rstrip() + "\n"
 
 

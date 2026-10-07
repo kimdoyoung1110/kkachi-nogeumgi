@@ -233,6 +233,34 @@ def test_live_recording_flow(make_client, tmp_path):
         assert client.post(f"/api/live/{rid}/finish").status_code == 409
 
 
+def test_live_app_audio_pcm_tracks(make_client, tmp_path):
+    """앱 창의 '다른 앱 소리 녹음': 실행기가 앱 소리·마이크 PCM 을 따로 보내면 섞어서 m4a 로 만든다."""
+    import math, struct
+    pipe = FakePipeline()
+    client, app = make_client(pipe)
+
+    def tone(freq, sec):
+        n = 16000 * sec
+        return struct.pack(f"<{n}h", *(int(8000 * math.sin(2 * math.pi * freq * i / 16000)) for i in range(n)))
+
+    with client:
+        rec = client.post("/api/live", data={"title": "줌 수업", "container": "pcm"}).json()
+        rid = rec["id"]
+        for seq in (1, 0, 2):  # 10초 조각 대신 2초짜리 3개, 순서 섞어서
+            assert client.put(f"/api/live/{rid}/chunks/{seq}?track=app", content=tone(440, 2)).status_code == 204
+        assert client.put(f"/api/live/{rid}/chunks/0?track=mic", content=tone(220, 2)).status_code == 204
+        assert client.put(f"/api/live/{rid}/chunks/0?track=evil", content=b"xx").status_code == 400
+        assert client.get(f"/api/recordings/{rid}").json()["stalled"] is False
+
+        r = client.post(f"/api/live/{rid}/finish", data={"language": "ko"})
+        assert r.status_code == 200
+        app.state.worker.wait_idle()
+        d = client.get(f"/api/recordings/{rid}").json()
+        assert d["status"] == "done" and d["file_name"] == "original.m4a"
+        assert 5.5 < d["duration"] < 6.5  # 더 긴 트랙(앱 소리 6초) 기준
+        assert not (tmp_path / "recordings" / rid / "chunks").exists()
+
+
 def test_live_finish_without_chunks_fails(make_client):
     client, _ = make_client(FakePipeline())
     with client:
@@ -398,7 +426,7 @@ def test_app_info_and_busy_blocks_update(make_client, monkeypatch):
         client.post("/api/live")  # 녹음 중
         assert client.get("/api/app").json()["busy"] == ["녹음 중이에요"]
         called = []
-        monkeypatch.setattr(system, "apply_update", lambda: called.append(1))
+        monkeypatch.setattr(system, "apply_update", lambda *a: called.append(1))
         r = client.post("/api/app/update")
         assert r.status_code == 409 and "녹음 중" in r.json()["detail"] and not called
 
@@ -481,3 +509,101 @@ def test_gift_config(make_client, tmp_path):
         assert client.get("/api/app/gift").json() == {"name": "지은"}
         (tmp_path / "gift.json").write_text("{깨진 파일")
         assert client.get("/api/app/gift").json() == {}
+
+
+def test_notes_during_recording(make_client):
+    client, _ = make_client(FakePipeline())
+    with client:
+        rid = client.post("/api/live").json()["id"]
+        r = client.post(f"/api/recordings/{rid}/notes", json={"t": 12.5, "text": "  시험에 나옴  "})
+        assert r.status_code == 201 and r.json()["notes"][0]["text"] == "시험에 나옴"
+        client.post(f"/api/recordings/{rid}/notes", json={"t": 3, "text": "과제 공지"})
+        notes = client.get(f"/api/recordings/{rid}").json()["notes"]
+        assert [n["text"] for n in notes] == ["과제 공지", "시험에 나옴"]  # 시간순
+        assert client.post(f"/api/recordings/{rid}/notes", json={"t": 1, "text": "  "}).status_code == 400
+        nid = notes[0]["id"]
+        assert client.patch(f"/api/recordings/{rid}/notes/{nid}", json={"text": "과제: 금요일까지"}).json()["notes"][0]["text"] == "과제: 금요일까지"
+        assert len(client.delete(f"/api/recordings/{rid}/notes/{nid}").json()["notes"]) == 1
+        assert client.delete(f"/api/recordings/{rid}/notes/{nid}").status_code == 404
+
+
+def test_notes_in_export(make_client):
+    client, app = make_client(FakePipeline())
+    with client:
+        with open(WAV, "rb") as f:
+            rid = client.post("/api/recordings", files={"file": ("a.wav", f, "audio/wav")}).json()["id"]
+        app.state.worker.wait_idle()
+        client.post(f"/api/recordings/{rid}/notes", json={"t": 0.5, "text": "중요한 공식"})
+        txt = client.get(f"/api/recordings/{rid}/export?format=txt").text
+        md = client.get(f"/api/recordings/{rid}/export?format=md").text
+        assert "📝 메모: 중요한 공식" in txt and "> 📝 중요한 공식" in md
+
+
+def test_extract_terms_from_pptx(make_client):
+    import io, zipfile
+    slide = ('<p:sld xmlns:p="p" xmlns:a="a"><a:p><a:r><a:t>인지 부조화(cognitive dissonance)</a:t></a:r></a:p>'
+             '<a:p><a:r><a:t>Customer Lifetime Value와 CRM, </a:t></a:r><a:r><a:t>CRM 전략</a:t></a:r></a:p></p:sld>')
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("ppt/slides/slide1.xml", slide)
+    client, _ = make_client(FakePipeline())
+    with client:
+        r = client.post("/api/terms/extract", files={"file": ("ch5.pptx", buf.getvalue())})
+        assert r.status_code == 200
+        found = r.json()["terms"]
+        assert "cognitive dissonance" in found and "인지 부조화" in found and "CRM" in found
+        assert "Customer Lifetime Value" in found
+        bad = client.post("/api/terms/extract", files={"file": ("a.hwp", b"xx")})
+        assert bad.status_code == 400 and "PDF" in bad.json()["detail"]
+        empty = client.post("/api/terms/extract", files={"file": ("a.txt", b"hi")})
+        assert empty.status_code == 400
+
+
+def _fake_voicememos(root):
+    import shutil, sqlite3
+    rec = root / "Recordings"
+    rec.mkdir(parents=True)
+    shutil.copy(WAV, rec / "20261005 103000-AAAA.m4a")
+    shutil.copy(WAV, rec / "20261006 090000-BBBB.m4a")
+    c = sqlite3.connect(rec / "CloudRecordings.db")
+    c.execute("CREATE TABLE ZCLOUDRECORDING (Z_PK INTEGER, ZPATH TEXT, ZENCRYPTEDTITLE TEXT, ZDATE REAL,"
+              " ZDURATION REAL, ZUNIQUEID TEXT)")
+    c.execute("INSERT INTO ZCLOUDRECORDING VALUES (1, '20261005 103000-AAAA.m4a', '소비자행동 5주차', 812000000, 3.2, 'AAAA')")
+    c.execute("INSERT INTO ZCLOUDRECORDING VALUES (2, '20261006 090000-BBBB.m4a', '', 812100000, 3.2, 'BBBB')")
+    c.commit()
+    c.close()
+
+
+def test_voicememo_import(make_client, tmp_path):
+    pipe = FakePipeline()
+    client, app = make_client(pipe)
+    root = tmp_path / "vm"
+    app.state.voicememos_root = root
+    with client:
+        assert client.get("/api/voicememos").json()["status"] == "missing"
+        _fake_voicememos(root)
+        items = client.get("/api/voicememos").json()["items"]
+        assert [m["title"] for m in items] == ["음성 메모", "소비자행동 5주차"]  # 새것부터, 제목 없으면 '음성 메모'
+        assert items[1]["date"] == 812000000 + 978307200 and not items[1]["imported"]
+
+        r = client.post("/api/voicememos/import", json={"keys": ["AAAA"], "subject": "소비자행동"})
+        assert r.status_code == 201 and len(r.json()) == 1
+        app.state.worker.wait_idle()
+        rec = client.get(f"/api/recordings/{r.json()[0]['id']}").json()
+        assert rec["status"] == "done" and rec["title"] == "소비자행동 5주차" and rec["source"] == "voicememo"
+        assert rec["created_at"] == 812000000 + 978307200 and rec["subject"] == "소비자행동"
+        # 두 번 가져오지 않는다
+        assert client.post("/api/voicememos/import", json={"keys": ["AAAA"]}).json() == []
+        assert [m["imported"] for m in client.get("/api/voicememos").json()["items"]] == [False, True]
+
+
+def test_voicememo_no_permission(make_client, monkeypatch):
+    from app import voicememos
+    client, _ = make_client(FakePipeline())
+
+    def denied(*a, **k):
+        raise voicememos.NoPermission()
+    monkeypatch.setattr(voicememos, "list_memos", denied)
+    with client:
+        assert client.get("/api/voicememos").json()["status"] == "permission"
+        assert client.post("/api/voicememos/import", json={"keys": ["x"]}).status_code == 403

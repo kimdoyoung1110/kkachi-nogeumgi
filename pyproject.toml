@@ -1,12 +1,13 @@
 [project]
 name = "kkachi-nogeumgi"
-version = "0.1.0"
+version = "1.0.1"
 description = "맥에서 로컬로 돌아가는 녹음·전사·화자 구분 앱"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "fastapi>=0.142.2",
     "imageio-ffmpeg>=0.6.0",
     "mlx-audio==0.5.7",
+    "pypdf>=6.19.0",
     "python-multipart>=0.0.32",
     "soynlp>=0.0.493",
     "uvicorn[standard]>=0.54.0",

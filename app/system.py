@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import logging.handlers
 import os
@@ -45,12 +46,23 @@ def _git(*args: str, timeout: float = 30) -> subprocess.CompletedProcess:
     )
 
 
+def release() -> Optional[str]:
+    """pyproject.toml 의 버전 (예: 1.0.1)"""
+    import tomllib
+
+    try:
+        with open(REPO_DIR / "pyproject.toml", "rb") as f:
+            return tomllib.load(f)["project"]["version"]
+    except (OSError, KeyError, ValueError):
+        return None
+
+
 def version() -> dict[str, Any]:
     r = _git("log", "-1", "--format=%h|%cI|%s")
     if r.returncode != 0:
-        return {"commit": None, "date": None, "subject": None}
+        return {"commit": None, "date": None, "subject": None, "release": release()}
     commit, date, subject = r.stdout.strip().split("|", 2)
-    return {"commit": commit, "date": date, "subject": subject}
+    return {"commit": commit, "date": date, "subject": subject, "release": release()}
 
 
 def check_update() -> dict[str, Any]:
@@ -65,12 +77,16 @@ def check_update() -> dict[str, Any]:
         return {"available": None, "message": "업데이트를 확인할 수 없어요. 인터넷 연결을 확인해 주세요."}
     r = _git("log", "--format=%s", f"HEAD..origin/{BRANCH}")
     changes = [line for line in r.stdout.splitlines() if line.strip()]
-    return {"available": bool(changes), "changes": changes[:20], "count": len(changes)}
+    have = {n["id"] for n in load_notes()}
+    notes = [n for n in load_notes(f"origin/{BRANCH}") if n["id"] not in have]
+    return {"available": bool(changes), "changes": changes[:20], "count": len(changes), "notes": notes}
 
 
-def apply_update() -> dict[str, Any]:
+def apply_update(data_dir: Optional[Path] = None) -> dict[str, Any]:
     """새 코드 받기 + 라이브러리 맞추기. 성공하면 재시작이 필요하다."""
     log = logging.getLogger(__name__)
+    if data_dir:
+        unseen_notes(data_dir)  # 지금 버전까지의 노트는 본 걸로 적어둔다 → 업데이트 뒤엔 새 노트만 보여줌
     before = _git("rev-parse", "HEAD").stdout.strip()
     pull = _git("pull", "--ff-only", "--quiet", "origin", BRANCH, timeout=120)
     if pull.returncode != 0:
@@ -84,6 +100,59 @@ def apply_update() -> dict[str, Any]:
             return {"ok": False, "message": "새 버전 준비 중 문제가 생겼어요. 로그를 보내주세요."}
     _rebuild_app_if_needed(before)
     return {"ok": True, "version": version()}
+
+
+# ---- 업데이트 노트 (whatsnew.json) ----
+# 커밋 메시지 대신 쓰는 사람이 알아보기 쉬운 설명. 새것이 앞에 오는 목록:
+#   [{"id": "2026-10-07", "date": "2026-10-07", "title": "...", "items": [{"icon", "title", "text"}]}]
+
+NOTES_FILE = "whatsnew.json"
+SEEN_FILE = "whatsnew_seen.json"
+
+
+def load_notes(ref: Optional[str] = None) -> list[dict[str, Any]]:
+    """ref 가 없으면 지금 설치된 노트, 있으면 그 git 버전의 노트 (예: origin/main). 없거나 깨졌으면 []."""
+    try:
+        if ref is None:
+            text = (REPO_DIR / NOTES_FILE).read_text(encoding="utf-8")
+        else:
+            r = _git("show", f"{ref}:{NOTES_FILE}")
+            if r.returncode != 0:
+                return []
+            text = r.stdout
+        notes = json.loads(text)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return []
+    return [n for n in notes if isinstance(n, dict) and n.get("id") and isinstance(n.get("items"), list)]
+
+
+def unseen_notes(data_dir: Path) -> list[dict[str, Any]]:
+    """아직 안 본 업데이트 노트. 처음 설치한 맥이면 지난 노트를 늘어놓지 않도록 모두 본 걸로 친다."""
+    path = data_dir / SEEN_FILE
+    notes = load_notes()
+    try:
+        seen = set(json.loads(path.read_text(encoding="utf-8")))
+    except (OSError, ValueError):
+        # 기록이 없음: 처음 설치 또는 노트 기능이 생기기 전 버전에서 업데이트한 직후.
+        # 업데이트 직후라면 git 이 남겨 둔 ORIG_HEAD(업데이트 전 버전)의 노트까지만 본 걸로 친다.
+        if _git("rev-parse", "--verify", "--quiet", "ORIG_HEAD").returncode == 0:
+            seen = {n["id"] for n in load_notes("ORIG_HEAD")}
+        else:
+            seen = {n["id"] for n in notes}
+        _write_seen(path, seen)
+    return [n for n in notes if n["id"] not in seen]
+
+
+def mark_notes_seen(data_dir: Path) -> None:
+    _write_seen(data_dir / SEEN_FILE, {n["id"] for n in load_notes()})
+
+
+def _write_seen(path: Path, ids: set[str]) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(sorted(ids), ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        pass
 
 
 APP_FILES = ("assets/kkachi-launcher", "assets/AppIcon.icns", "scripts/build_app.sh")

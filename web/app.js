@@ -93,6 +93,32 @@ function nativeNotify(title, body, hash) {
   try { window.webkit?.messageHandlers?.kkachi?.postMessage({ type: "notify", title, body, hash }); } catch {}
 }
 
+// 앱 창의 실행기가 '다른 앱 소리 녹음'을 할 수 있는지 (업데이트 직후 예전 실행기면 없음 → 앱을 껐다 켜야 함)
+const NATIVE_CAPTURE = IN_APP && !!window.KKACHI_NATIVE?.capture;
+// 크롬(·엣지)에서 열었으면 탭 소리를 녹음할 수 있다. 사파리는 화면 공유로 소리를 못 가져옴
+const CAN_TAB = !IN_APP && !!navigator.mediaDevices?.getDisplayMedia && /Chrome\/|Edg\//.test(navigator.userAgent);
+
+// 앱 창(실행기)에 답을 받아야 하는 요청을 보낸다
+function nativeCall(type, data = {}) {
+  const h = window.webkit?.messageHandlers?.kkachiCall;
+  if (!h) return Promise.reject(new Error("까치녹음기를 완전히 껐다(⌘Q) 다시 켜면 쓸 수 있어요."));
+  return h.postMessage({ type, ...data });
+}
+
+async function openInChrome() {
+  let res;
+  try {
+    res = await nativeCall("open-chrome", { hash: "#/" });
+  } catch {
+    window.open(`${location.origin}/`, "_blank");  // 예전 실행기: 기본 브라우저로 열린다
+    toast("브라우저에서 열었어요. 탭 소리 녹음은 크롬에서만 돼요.");
+    return;
+  }
+  toast(res?.ok
+    ? "크롬에서 열었어요. 거기서 ● 녹음하기 › 크롬 탭 소리를 고르세요."
+    : "크롬이 없어서 기본 브라우저로 열었어요. 탭 소리 녹음은 크롬에서만 돼요.", res?.ok ? "" : "error");
+}
+
 // 선물 설정 (이 맥의 gift.json: 이름). 없으면 빈 객체
 state.gift = {};
 
@@ -125,6 +151,8 @@ function hashParams() {
 
 function route() {
   const m = location.hash.match(/^#\/r\/([\w-]+)/);
+  view.classList.remove("wide");
+  closeSlides();
   const searchInput = $("#search-input");
   if (location.hash.startsWith("#/search")) {
     const q = hashParams().get("q") || "";
@@ -155,7 +183,10 @@ function renderHome() {
   refresh();
 }
 
+let optionsSeq = 0;
+
 function optionsFieldsHTML(defaultTitle) {
+  optionsSeq++;
   const subjectOptions = state.subjects.map((s) => `<option value="${esc(s.name)}">`).join("");
   return `
       <label class="field">
@@ -193,11 +224,14 @@ function optionsFieldsHTML(defaultTitle) {
       <details class="advanced" id="advanced">
         <summary>용어 힌트 · 용어 바꾸기 (선택)</summary>
         <div class="advanced-body">
-          <label class="field">
-            <span class="field-label">용어 힌트</span>
-            <textarea class="textarea" name="hotwords" placeholder="hash table, collision, linked list"></textarea>
-            <span class="field-hint">강의에 자주 나오는 전문 용어를 쉼표나 줄바꿈으로 적어주세요. 받아쓸 때 참고해요.</span>
-          </label>
+          <div class="field">
+            <div class="field-label-row">
+              <label class="field-label" for="hotwords-${optionsSeq}">용어 힌트</label>
+              <button type="button" class="btn btn-sm btn-ghost" data-act="pick-doc">📄 강의자료에서 뽑기</button>
+            </div>
+            <textarea class="textarea" name="hotwords" id="hotwords-${optionsSeq}" placeholder="hash table, collision, linked list"></textarea>
+            <span class="field-hint">강의에 자주 나오는 전문 용어를 쉼표나 줄바꿈으로 적어주세요. 강의자료(PDF·PPT)를 넣으면 알아서 찾아줘요.</span>
+          </div>
           <label class="field">
             <span class="field-label">용어 바꾸기</span>
             <textarea class="textarea" name="replacements" placeholder="컬리전 = collision&#10;세프리 체인잉 = separate chaining"></textarea>
@@ -227,8 +261,8 @@ function renderUploadArea() {
         <div class="dropzone-sub">m4a · mp3 · wav · 영상 파일도 돼요. 2시간 강의도 괜찮아요. 바로 녹음하려면 위의 <b>● 녹음하기</b>를 누르세요.</div>
       </div>`;
     const dz = $("#dropzone");
-    dz.addEventListener("click", pickFile);
-    dz.addEventListener("keydown", (e) => (e.key === "Enter" || e.key === " ") && pickFile());
+    dz.addEventListener("click", chooseUploadSource);
+    dz.addEventListener("keydown", (e) => (e.key === "Enter" || e.key === " ") && chooseUploadSource());
     return;
   }
 
@@ -269,6 +303,203 @@ function fillSubjectTerms(form) {
   if (s.hotwords.length || Object.keys(s.replacements).length) $("#advanced").open = true;
 }
 
+/* 강의자료(PDF·PPT·워드)에서 전공 용어를 뽑아 용어 힌트에 넣는다 */
+const DOC_RE = /\.(pdf|pptx|docx|txt|md)$/i;
+
+function pickDoc(form) {
+  const input = $("#doc-input");
+  input.value = "";
+  input.onchange = () => input.files[0] && extractTermsInto(form, input.files[0]);
+  input.click();
+}
+
+async function extractTermsInto(form, file) {
+  if (/\.(ppt|doc|hwp|hwpx)$/i.test(file.name)) {
+    toast("예전 형식(ppt·doc)과 한글 파일은 못 읽어요. PDF 로 저장해서 넣어주세요.", "error");
+    return;
+  }
+  const btn = form.querySelector("[data-act=pick-doc]");
+  if (btn) { btn.disabled = true; btn.textContent = "📄 읽는 중…"; }
+  const fd = new FormData();
+  fd.append("file", file);
+  let r;
+  try {
+    r = await api("/api/terms/extract", { method: "POST", body: fd });
+  } catch (err) {
+    toast(err.message, "error");
+    return;
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "📄 강의자료에서 뽑기"; }
+  }
+  const isPdf = /\.pdf$/i.test(file.name);
+  if (!r.terms.length && !isPdf) { toast("강의자료에서 전공 용어를 찾지 못했어요.", "error"); return; }
+  const have = new Set(form.hotwords.value.split(/[,\n]/).map((t) => t.trim().toLowerCase()).filter(Boolean));
+  const picked = await termsDialog(file.name, r.terms.filter((t) => !have.has(t.toLowerCase())), isPdf);
+  if (!picked) return;
+  form._slides = picked.attach ? file : null;
+  if (picked.attach) toast("받아쓰기를 시작하면 이 PDF 를 녹음에 붙여둘게요.");
+  if (!picked.terms.length) return;
+  const cur = form.hotwords.value.trim();
+  form.hotwords.value = (cur ? cur.replace(/[,\s]+$/, "") + ", " : "") + picked.terms.join(", ");
+  form.querySelector("#advanced").open = true;
+  if (!picked.attach) toast(`용어 ${picked.terms.length}개를 넣었어요.`);
+}
+
+function termsDialog(fileName, terms, canAttach = false) {
+  if (!terms.length && !canAttach) { toast("뽑은 용어가 이미 다 들어 있어요."); return Promise.resolve(null); }
+  return sheetDialog((body, close) => {
+    body.innerHTML = `
+      <h3 class="source-title">📄 ${esc(fileName)}</h3>
+      <p class="field-hint">${terms.length ? `받아쓰기에 참고할 용어 ${terms.length}개를 찾았어요. 빼고 싶은 건 눌러서 끄세요.` : "새로 넣을 용어는 없어요."}</p>
+      <div class="term-chips">${terms.map((t, i) => `
+        <label class="term-chip"><input type="checkbox" data-i="${i}" checked><span>${esc(t)}</span></label>`).join("")}</div>
+      ${canAttach ? `<label class="toggle source-mic"><input type="checkbox" name="attach" checked><span>이 PDF 를 녹음에 붙여두기 (결과에서 슬라이드와 같이 보기)</span></label>` : ""}
+      <div class="dialog-actions">
+        <button type="button" class="btn btn-ghost" data-act="close">취소</button>
+        <button type="button" class="btn btn-primary" data-act="ok">용어 넣기</button>
+      </div>`;
+    body.onclick = (e) => {
+      const act = e.target.closest("[data-act]")?.dataset.act;
+      if (act === "close") close(null);
+      if (act === "ok") close({
+        terms: [...body.querySelectorAll("[data-i]:checked")].map((c) => terms[Number(c.dataset.i)]),
+        attach: !!body.querySelector("[name=attach]")?.checked,
+      });
+    };
+  });
+}
+
+/* 여러 용도로 쓰는 창: render(body, close) 로 내용을 그리고, close(값) 하면 그 값으로 끝난다 */
+function sheetDialog(render) {
+  const dlg = $("#sheet-dialog");
+  const body = $("#sheet-body");
+  return new Promise((resolve) => {
+    const close = (value) => {
+      body.onclick = dlg.oncancel = null;
+      dlg.close();
+      resolve(value);
+    };
+    dlg.oncancel = (e) => { e.preventDefault(); close(null); };
+    render(body, close);
+    if (!dlg.open) dlg.showModal();
+  });
+}
+
+document.addEventListener("click", (e) => {
+  const b = e.target.closest("[data-act=pick-doc]");
+  if (b) pickDoc(b.closest("form"));
+});
+
+/* ---------- 아이폰 음성 메모 가져오기 ---------- */
+
+async function voiceMemoDialog() {
+  let r;
+  try { r = await api("/api/voicememos"); } catch (err) { toast(err.message, "error"); return; }
+  const picked = await sheetDialog((body, close) => {
+    if (r.status === "permission") {
+      body.innerHTML = `
+        <h3 class="source-title">📱 아이폰 음성 메모 가져오기</h3>
+        <p>음성 메모 폴더를 읽으려면 맥에서 한 번 허용해야 해요.</p>
+        <ol class="source-steps">
+          <li><b>시스템 설정 › 개인정보 보호 및 보안 › 전체 디스크 접근 권한</b>을 열어요.</li>
+          <li>목록에서 <b>까치녹음기</b>를 켜요. 없으면 <b>+</b>를 눌러 응용 프로그램의 까치녹음기를 추가해요.</li>
+          <li>까치녹음기를 <b>⌘Q로 껐다 다시 켜요.</b></li>
+        </ol>
+        <div class="dialog-actions">
+          <button type="button" class="btn btn-ghost" data-act="close">닫기</button>
+          ${IN_APP ? `<button type="button" class="btn btn-primary" data-act="settings">설정 열기</button>` : ""}
+        </div>`;
+    } else if (r.status === "missing" || !r.items.length) {
+      body.innerHTML = `
+        <h3 class="source-title">📱 아이폰 음성 메모 가져오기</h3>
+        <p>이 맥에서 음성 메모를 찾을 수 없어요.</p>
+        <ol class="source-steps">
+          <li>아이폰 <b>설정 › 내 이름 › iCloud</b>에서 <b>음성 메모</b>를 켜요.</li>
+          <li>맥에서도 같은 iCloud 계정으로 <b>음성 메모</b> 앱을 한 번 열어요.</li>
+          <li>잠시 뒤 아이폰 녹음이 맥에 내려오면 여기서 가져올 수 있어요.</li>
+        </ol>
+        <div class="dialog-actions"><button type="button" class="btn btn-primary" data-act="close">확인</button></div>`;
+    } else {
+      const items = r.items.slice(0, 60);
+      body.innerHTML = `
+        <h3 class="source-title">📱 아이폰 음성 메모 가져오기</h3>
+        <div class="memo-list">${items.map((m, i) => `
+          <label class="memo-item ${m.imported ? "done" : ""}">
+            <input type="checkbox" data-i="${i}" ${m.imported ? "disabled" : ""}>
+            <span class="memo-text"><b>${esc(m.title)}</b>
+              <small>${fmtDate(m.date)}${m.duration ? ` · ${fmtDuration(m.duration)}` : ""}${m.imported ? " · 가져옴" : ""}</small></span>
+          </label>`).join("")}</div>
+        <label class="field">
+          <span class="field-label">분류 <span class="field-hint">(선택)</span></span>
+          <input class="input" name="vm-subject" list="subject-list" placeholder="예: 소비자행동" autocomplete="off" value="${esc(currentCategoryName())}">
+          <span class="field-hint">분류에 저장해 둔 용어 힌트로 받아써요.</span>
+        </label>
+        <div class="dialog-actions">
+          <button type="button" class="btn btn-ghost" data-act="close">취소</button>
+          <button type="button" class="btn btn-primary" data-act="import" disabled>가져와서 받아쓰기</button>
+        </div>`;
+      const go = body.querySelector("[data-act=import]");
+      body.onchange = () => {
+        const n = body.querySelectorAll("[data-i]:checked").length;
+        go.disabled = !n;
+        go.textContent = n ? `${n}개 가져와서 받아쓰기` : "가져와서 받아쓰기";
+      };
+      body.onclick = (e) => {
+        const act = e.target.closest("[data-act]")?.dataset.act;
+        if (act === "close") close(null);
+        if (act === "import") close({
+          keys: [...body.querySelectorAll("[data-i]:checked")].map((c) => items[Number(c.dataset.i)].key),
+          subject: body.querySelector("[name=vm-subject]").value.trim(),
+        });
+      };
+      return;
+    }
+    body.onclick = (e) => {
+      const act = e.target.closest("[data-act]")?.dataset.act;
+      if (act === "close") close(null);
+      if (act === "settings") nativeCall("open-settings", { pane: "files" }).catch(() => toast("시스템 설정을 직접 열어주세요.", "error"));
+    };
+  });
+  $("#sheet-body").onchange = null;
+  if (!picked?.keys.length) return;
+  try {
+    const made = await api("/api/voicememos/import", jsonOpts("POST", picked));
+    toast(made.length ? `음성 메모 ${made.length}개를 가져왔어요. 받아쓰기가 끝나면 알려드릴게요.` : "이미 가져온 음성 메모예요.");
+    refresh();
+    loadSubjects();
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+
+/* 파일 올리기: 이 맥의 파일 / 아이폰 음성 메모 중에서 고른다 */
+async function chooseUploadSource() {
+  if (recorder.phase !== "idle") { toast("녹음을 먼저 끝내주세요.", "error"); return; }
+  const pick = await sheetDialog((body, close) => {
+    body.innerHTML = `
+      <h3 class="source-title">어디에 있는 녹음을 올릴까요?</h3>
+      <div class="source-list">
+        <button type="button" class="source-opt" data-src="file">
+          <span class="source-icon">💻</span>
+          <span class="source-text"><b>이 맥에 있는 파일</b><small>m4a · mp3 · wav · 영상 파일. 화면에 끌어다 놓아도 돼요</small></span>
+        </button>
+        <button type="button" class="source-opt" data-src="iphone">
+          <span class="source-icon">📱</span>
+          <span class="source-text"><b>아이폰 음성 메모</b><small>아이폰에서 녹음해 iCloud 로 맥에 넘어온 음성 메모</small></span>
+        </button>
+      </div>
+      <div class="dialog-actions"><button type="button" class="btn btn-ghost" data-src="cancel">취소</button></div>`;
+    body.onclick = (e) => {
+      const src = e.target.closest("[data-src]")?.dataset.src;
+      if (!src) return;
+      close(src === "cancel" ? null : src);
+      // 파일 고르기 창은 누른 그 순간에 열어야 앱 창(WebKit)이 막지 않는다
+      if (src === "file") pickFile();
+    };
+  });
+  if (pick === "iphone") voiceMemoDialog();
+}
+
 function pickFile() {
   $("#file-input").value = "";
   $("#file-input").click();
@@ -276,6 +507,12 @@ function pickFile() {
 
 function acceptFile(file) {
   if (!file) return;
+  if (DOC_RE.test(file.name) || /\.(ppt|doc|hwp|hwpx)$/i.test(file.name)) {
+    const form = $("#upload-form") || $("#finish-form");
+    if (form) extractTermsInto(form, file);
+    else toast("강의자료는 녹음 파일을 고른 뒤 '용어 힌트'의 📄 강의자료에서 뽑기로 넣어주세요.", "error");
+    return;
+  }
   const ok = /^(audio|video)\//.test(file.type) || /\.(m4a|mp3|wav|webm|mp4|aac|ogg|flac|mov|caf)$/i.test(file.name);
   if (!ok) { toast("소리 파일이 아닌 것 같아요. m4a, mp3, wav 같은 파일을 골라주세요.", "error"); return; }
   if (recorder.phase !== "idle") { toast("녹음을 먼저 끝내주세요.", "error"); return; }
@@ -305,6 +542,9 @@ function submitUpload(form) {
   xhr.onload = () => {
     state.uploading = false;
     if (xhr.status === 201) {
+      if (form._slides) {
+        try { attachSlides(JSON.parse(xhr.responseText).id, form._slides); } catch {}
+      }
       state.pendingFile = null;
       renderUploadArea();
       toast("올렸어요. 받아쓰기가 끝나면 목록에서 열 수 있어요.");
@@ -741,6 +981,10 @@ const detail = {
   follow: true,
   editing: null,     // 고치는 중인 문단 id
   pollTimer: null,
+  pdf: null,         // 붙여 둔 강의자료 (PDF.js 문서)
+  slidePage: 1,
+  slideFollow: true,
+  slideManualUntil: 0,
 };
 
 const spkColor = (i) => `var(--spk-${((i % 8) + 8) % 8})`;
@@ -749,6 +993,7 @@ const langBadge = (l) => (l === "mixed" ? "KO·EN" : String(l || "").toUpperCase
 
 async function renderDetail(id, params = new URLSearchParams()) {
   clearTimeout(detail.pollTimer);
+  closeSlides();
   Object.assign(detail, { id, data: null, activeUtt: null, activeWord: null, editing: null, onlyStarred: false });
   view.innerHTML = `<a class="back" href="#/">← 내 녹음</a><div class="empty">불러오는 중…</div>`;
   try { detail.data = await api(`/api/recordings/${id}`); }
@@ -765,6 +1010,7 @@ async function renderDetail(id, params = new URLSearchParams()) {
           <button class="btn btn-sm btn-primary" id="ai-copy">AI 요약용 복사 ▾</button>
           <button class="btn btn-sm btn-ghost" id="copy-all">전체 복사</button>
           <button class="btn btn-sm btn-ghost" id="export-menu">내보내기 ▾</button>
+          <button class="btn btn-sm btn-ghost" id="slides-btn" title="강의 PDF를 붙여서 슬라이드와 같이 보기">📄 강의자료${d.slides ? " ▾" : " 붙이기"}</button>
           <button class="btn btn-sm btn-ghost" id="redo-all" title="처음부터 다시 받아쓰기">↻</button>
         </div>
       </div>
@@ -781,11 +1027,16 @@ async function renderDetail(id, params = new URLSearchParams()) {
     </div>
     <div class="speakers" id="speakers"></div>
     <p class="hint-line">이름을 누르면 바꾸거나 다른 화자와 합칠 수 있어요 · 문장을 두 번 누르면 고칠 수 있어요 · 단어를 누르면 그 부분부터 들려줘요</p>
-    <div class="transcript" id="transcript"></div>`;
+    <div class="detail-body ${d.slides ? "with-slides" : ""}">
+      <div class="transcript" id="transcript"></div>
+      ${d.slides ? slidePaneHTML(d.slides) : ""}
+    </div>`;
+  view.classList.toggle("wide", !!d.slides);
 
   renderSpeakers();
   renderTranscript();
   bindDetail();
+  if (d.slides) openSlides(Number(params.get("page")) || null);
 
   // 검색 결과에서 들어온 경우: 그 문단으로 스크롤하고 재생 위치를 맞춘다 (자동 재생은 안 함)
   const uttId = Number(params.get("u"));
@@ -800,6 +1051,186 @@ async function renderDetail(id, params = new URLSearchParams()) {
       p.readyState >= 1 ? setTime() : p.addEventListener("loadedmetadata", setTime, { once: true });
     }
   }
+}
+
+/* ---------- 강의자료(슬라이드) 붙여 두기 ---------- */
+
+function slidePaneHTML(sl) {
+  return `
+    <aside class="slide-pane" id="slide-pane">
+      <div class="slide-head">
+        <span class="slide-name" title="${esc(sl.name)}">📄 ${esc(sl.name)}</span>
+        ${sl.has_text ? `<label class="toggle"><input type="checkbox" id="slide-follow" ${detail.slideFollow ? "checked" : ""}><span>따라가기</span></label>` : ""}
+      </div>
+      <div class="slide-frame" id="slide-frame"><canvas id="slide-canvas"></canvas><div class="slide-loading" id="slide-loading">불러오는 중…</div></div>
+      <div class="slide-nav">
+        <button class="icon-btn" id="slide-prev" aria-label="이전 쪽">◀</button>
+        <span class="slide-num" id="slide-num">- / ${sl.pages}</span>
+        <button class="icon-btn" id="slide-next" aria-label="다음 쪽">▶</button>
+        <button class="btn btn-sm btn-ghost" id="slide-play" ${sl.has_text ? "" : "hidden"}>▶ 이 쪽 설명 듣기</button>
+      </div>
+      ${sl.has_text ? "" : `<p class="field-hint">글자가 없는 PDF(스캔본)라 재생에 맞춰 넘어가지는 않아요. 직접 넘겨서 보세요.</p>`}
+    </aside>`;
+}
+
+// 문단 → 쪽 (서버가 맞춰 둔 것)
+const slideOf = (u) => detail.data?.slides?.map?.[u.id];
+
+// 쪽이 바뀌는 첫 문단에만 '📄 n쪽' 표시
+function slideStarts() {
+  const starts = new Map();
+  if (!detail.data?.slides?.has_text) return starts;
+  let prev = null;
+  for (const u of detail.data.utterances) {
+    const p = slideOf(u);
+    if (p && (p !== prev || detail.onlyStarred)) starts.set(u.id, p);
+    prev = p;
+  }
+  return starts;
+}
+
+let pdfjsLib = null;
+async function loadPdfjs() {
+  if (!pdfjsLib) {
+    pdfjsLib = await import("/vendor/pdfjs/pdf.min.mjs");
+    pdfjsLib.GlobalWorkerOptions.workerSrc = "/vendor/pdfjs/pdf.worker.min.mjs";
+  }
+  return pdfjsLib;
+}
+
+async function openSlides(startPage) {
+  const id = detail.id;
+  try {
+    const lib = await loadPdfjs();
+    const pdf = await lib.getDocument({
+      url: `/api/recordings/${id}/slides.pdf`,
+      cMapUrl: "/vendor/pdfjs/cmaps/", cMapPacked: true,   // 한글 글꼴이 안 들어 있는 PDF 용
+      standardFontDataUrl: "/vendor/pdfjs/standard_fonts/",
+    }).promise;
+    if (detail.id !== id || !$("#slide-canvas")) { pdf.destroy(); return; }
+    detail.pdf = pdf;
+  } catch {
+    const l = $("#slide-loading");
+    if (l) l.textContent = "강의자료를 열지 못했어요.";
+    return;
+  }
+  $("#slide-prev").onclick = () => { detail.slideManualUntil = Date.now() + 20_000; showSlide(detail.slidePage - 1); };
+  $("#slide-next").onclick = () => { detail.slideManualUntil = Date.now() + 20_000; showSlide(detail.slidePage + 1); };
+  $("#slide-play").onclick = playSlide;
+  $("#slide-follow")?.addEventListener("change", (e) => { detail.slideFollow = e.target.checked; detail.slideManualUntil = 0; });
+  const first = detail.data.utterances.map(slideOf).find(Boolean) || 1;
+  await showSlide(startPage || first);
+  if (startPage) seekToSlide(startPage, false);  // 검색에서 쪽으로 들어온 경우: 그 쪽 설명 위치로
+}
+
+function closeSlides() {
+  detail.renderTask?.cancel();
+  detail.pdf?.destroy();
+  Object.assign(detail, { pdf: null, renderTask: null, slidePage: 1 });
+}
+
+async function showSlide(n) {
+  const pdf = detail.pdf;
+  if (!pdf) return;
+  n = Math.min(Math.max(1, n), pdf.numPages);
+  detail.slidePage = n;
+  $("#slide-num").textContent = `${n} / ${pdf.numPages}`;
+  $("#slide-prev").disabled = n <= 1;
+  $("#slide-next").disabled = n >= pdf.numPages;
+  const page = await pdf.getPage(n);
+  if (detail.pdf !== pdf || detail.slidePage !== n) return;
+  const canvas = $("#slide-canvas");
+  const frame = $("#slide-frame");
+  if (!canvas) return;
+  const base = page.getViewport({ scale: 1 });
+  const scale = (frame.clientWidth / base.width) * (window.devicePixelRatio || 1);
+  const vp = page.getViewport({ scale });
+  detail.renderTask?.cancel();
+  const off = document.createElement("canvas");   // 다 그린 뒤 바꿔 끼워서 깜빡이지 않게
+  off.width = vp.width;
+  off.height = vp.height;
+  detail.renderTask = page.render({ canvasContext: off.getContext("2d"), viewport: vp });
+  try { await detail.renderTask.promise; } catch { return; }  // 다른 쪽으로 넘어가서 취소됨
+  canvas.width = off.width;
+  canvas.height = off.height;
+  canvas.getContext("2d").drawImage(off, 0, 0);
+  $("#slide-loading").hidden = true;
+}
+
+function followSlide(u) {
+  if (!detail.pdf || !detail.slideFollow || Date.now() < detail.slideManualUntil) return;
+  const p = slideOf(u);
+  if (p && p !== detail.slidePage) showSlide(p);
+}
+
+// 지금 보는 쪽을 설명한 첫 부분으로
+function seekToSlide(n, play = true) {
+  const u = detail.data.utterances.find((x) => slideOf(x) === n);
+  if (!u) { toast("이 쪽을 설명한 부분을 찾지 못했어요."); return; }
+  detail.slideManualUntil = 0;
+  view.querySelector(`.utt[data-id="${u.id}"]`)?.scrollIntoView({ block: "center" });
+  if (play) seek(u.start);
+  else {
+    const p = $("#player");
+    const set = () => { p.currentTime = Math.max(0, u.start - 0.05); };
+    p.readyState >= 1 ? set() : p.addEventListener("loadedmetadata", set, { once: true });
+  }
+}
+
+function playSlide() { seekToSlide(detail.slidePage); }
+
+let slideResizeTimer = null;
+window.addEventListener("resize", () => {
+  clearTimeout(slideResizeTimer);
+  slideResizeTimer = setTimeout(() => detail.pdf && showSlide(detail.slidePage), 200);
+});
+
+async function slidesMenu(anchor) {
+  if (!detail.data.slides) return pickSlides();
+  openMenu(anchor, [
+    { label: "다른 PDF로 바꾸기", icon: "📄", run: pickSlides },
+    { label: "강의자료 떼기", icon: "✕", danger: true, run: detachSlides },
+  ]);
+}
+
+function pickSlides() {
+  const input = $("#doc-input");
+  input.value = "";
+  input.accept = ".pdf";
+  input.onchange = () => {
+    input.accept = ".pdf,.pptx,.docx,.txt,.md";
+    if (input.files[0]) attachSlides(detail.id, input.files[0]).then((ok) => ok && renderDetail(detail.id));
+  };
+  input.click();
+}
+
+/* 녹음에 PDF 붙이기. 결과 화면과 업로드 화면에서 같이 쓴다 */
+async function attachSlides(recId, file) {
+  if (!/\.pdf$/i.test(file.name)) {
+    toast("PDF 만 붙일 수 있어요. 파워포인트는 'PDF로 내보내기' 한 뒤 붙여주세요.", "error");
+    return false;
+  }
+  toast("강의자료를 붙이는 중…");
+  const fd = new FormData();
+  fd.append("file", file);
+  try {
+    const r = await api(`/api/recordings/${recId}/slides`, { method: "POST", body: fd });
+    toast(r.terms_added.length
+      ? `강의자료를 붙였어요. 전공 용어 ${r.terms_added.length}개는 용어 힌트에 넣어뒀어요.`
+      : "강의자료를 붙였어요.");
+    return true;
+  } catch (err) {
+    toast(err.message, "error");
+    return false;
+  }
+}
+
+async function detachSlides() {
+  if (!(await confirmDialog("붙여 둔 강의자료를 뗄까요? 받아쓴 내용은 그대로예요.", "떼기"))) return;
+  try {
+    await api(`/api/recordings/${detail.id}/slides`, { method: "DELETE" });
+    renderDetail(detail.id);
+  } catch (err) { toast(err.message, "error"); }
 }
 
 function downloadExport(format) {
@@ -828,6 +1259,7 @@ const AI_PROMPTS = {
 - 문장 자체를 알아듣기 어려운 부분에만 "(전사 불명확)"을 붙이기
 - 같은 말이 계속 반복되는 구간이나 앞뒤와 상관없는 짧은 영어 문장은 인식 오류일 수 있으니 무시
 - ★로 시작하는 줄은 녹음한 사람이 '중요'라고 표시한 부분이니 빠뜨리지 말고 강조하기
+- 📝 메모는 녹음한 사람이 그 순간 적어 둔 것이니 정리에 반영하기
 
 [숫자]
 - 숫자는 전사문에 적힌 그대로 쓰기
@@ -868,13 +1300,15 @@ function transcriptForAI(kind) {
   // 같은 화자가 이어서 말한 문단은 한 줄로 합쳐서 짧고 읽기 쉽게 만든다
   const d = detail.data;
   const stars = starredIds();
+  const notes = noteMap();
   const lines = [];
   let cur = null;
   for (const u of d.utterances) {
     const star = stars.has(u.id);
-    if (cur && cur.speaker === u.speaker) { cur.text += " " + u.text; cur.star ||= star; continue; }
+    const memo = (notes.get(u.id) || []).map((n) => n.text);
+    if (cur && cur.speaker === u.speaker) { cur.text += " " + u.text; cur.star ||= star; cur.memo.push(...memo); continue; }
     if (cur) lines.push(cur);
-    cur = { speaker: u.speaker, start: u.start, text: u.text, star };
+    cur = { speaker: u.speaker, start: u.start, text: u.text, star, memo };
   }
   if (cur) lines.push(cur);
   const names = d.speakers.map((s) => s.name).join(", ");
@@ -890,7 +1324,8 @@ function transcriptForAI(kind) {
       : []),
     "",
     "[전사문]",
-    ...lines.map((l) => `${l.star ? "★ " : ""}${speakerName(l.speaker)} (${fmtClock(l.start)}): ${l.text}`),
+    ...lines.map((l) => `${l.star ? "★ " : ""}${speakerName(l.speaker)} (${fmtClock(l.start)}): ${l.text}`
+      + l.memo.map((m) => `\n  📝 녹음한 사람의 메모: ${m}`).join("")),
   );
   return parts.join("\n") + "\n";
 }
@@ -990,15 +1425,99 @@ function wordsHTML(u) {
   return u.words.map((w, i) => `<span class="w" data-i="${i}" data-t="${w[1]}">${esc(w[0])}</span>`).join(" ");
 }
 
+/* 시간 → 그 시간에 말하던 문단 (중요 표시·메모 공통) */
+function uttAt(t) {
+  const utts = detail.data.utterances;
+  let hit = utts[0];
+  for (const u of utts) {
+    if (u.start <= t + 0.3) hit = u; else break;
+  }
+  return hit;
+}
+
+/* 메모 → 문단 id 별 목록 */
+function noteMap() {
+  const map = new Map();
+  for (const n of detail.data.notes || []) {
+    const u = uttAt(n.t);
+    if (!u) continue;
+    if (!map.has(u.id)) map.set(u.id, []);
+    map.get(u.id).push(n);
+  }
+  return map;
+}
+
+function notesHTML(u, notes = []) {
+  const draft = detail.noteDraft === u.id;
+  if (!notes.length && !draft) return "";
+  return `<div class="utt-notes">${notes.map((n) => `
+      <div class="utt-note" data-note="${n.id}">
+        <button class="utt-note-text" data-note-edit title="눌러서 고치기">📝 ${esc(n.text)}</button>
+        <button class="utt-note-del" data-note-del title="메모 지우기" aria-label="메모 지우기">×</button>
+      </div>`).join("")}
+    ${draft ? `<input class="input utt-note-input" data-note-new maxlength="500" placeholder="메모 적고 Enter (Esc 취소)">` : ""}
+  </div>`;
+}
+
+function startNote(u) {
+  detail.noteDraft = u.id;
+  renderTranscript();
+  view.querySelector("[data-note-new]")?.focus();
+}
+
+async function saveNewNote(input) {
+  const u = detail.data.utterances.find((x) => x.id === detail.noteDraft);
+  const text = input.value.trim();
+  detail.noteDraft = null;
+  if (u && text) {
+    try {
+      detail.data.notes = (await api(`/api/recordings/${detail.id}/notes`, jsonOpts("POST", { t: u.start + 0.05, text }))).notes;
+    } catch (err) { toast(err.message, "error"); }
+  }
+  renderTranscript();
+}
+
+function editNote(btn) {
+  const id = Number(btn.closest("[data-note]").dataset.note);
+  const note = detail.data.notes.find((n) => n.id === id);
+  const input = document.createElement("input");
+  input.className = "input utt-note-input";
+  input.maxLength = 500;
+  input.value = note.text;
+  btn.replaceWith(input);
+  input.focus();
+  let done = false;
+  const finish = async (commit) => {
+    if (done) return;
+    done = true;
+    const v = input.value.trim();
+    if (commit && v && v !== note.text) {
+      try {
+        detail.data.notes = (await api(`/api/recordings/${detail.id}/notes/${id}`, jsonOpts("PATCH", { text: v }))).notes;
+      } catch (err) { toast(err.message, "error"); }
+    }
+    renderTranscript();
+  };
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.isComposing) finish(true);
+    if (e.key === "Escape") finish(false);
+  });
+  input.addEventListener("blur", () => finish(true));
+}
+
+async function deleteNote(btn) {
+  const id = Number(btn.closest("[data-note]").dataset.note);
+  try {
+    detail.data.notes = (await api(`/api/recordings/${detail.id}/notes/${id}`, { method: "DELETE" })).notes;
+    renderTranscript();
+  } catch (err) { toast(err.message, "error"); }
+}
+
 /* 중요 표시(시간) → 그 시간에 말하던 문단 */
 function starredIds() {
-  const utts = detail.data.utterances;
   const ids = new Set();
   for (const t of detail.data.marks || []) {
-    let hit = utts[0];
-    for (const u of utts) {
-      if (u.start <= t + 0.3) hit = u; else break;
-    }
+    const hit = uttAt(t);
     if (hit) ids.add(hit.id);
   }
   return ids;
@@ -1022,15 +1541,16 @@ async function toggleStar(u) {
 }
 
 function updateStarFilter() {
-  const n = starredIds().size;
+  const ids = new Set([...starredIds(), ...noteMap().keys()]);
+  const n = ids.size;
   const el = $("#star-filter");
   if (el) {
     el.hidden = !n && !detail.onlyStarred;
-    el.querySelector("span").textContent = `⭐ 중요만 (${n})`;
+    el.querySelector("span").textContent = `⭐ 중요·📝 메모만 (${n})`;
   }
 }
 
-function uttHTML(u, starred = false) {
+function uttHTML(u, starred = false, notes = []) {
   const editing = detail.editing === u.id;
   return `
     <div class="utt ${u.busy ? "busy" : ""} ${detail.activeUtt === u.id ? "active" : ""} ${starred ? "starred" : ""}" data-id="${u.id}" data-start="${u.start}" data-end="${u.end}">
@@ -1041,6 +1561,7 @@ function uttHTML(u, starred = false) {
           <button class="utt-time" data-seek="${u.start}">${fmtClock(u.start)}</button>
           <button class="utt-star ${starred ? "on" : ""}" data-star title="${starred ? "중요 표시 빼기" : "중요 표시"}">${starred ? "⭐" : "☆"}</button>
           <span class="utt-lang">${langBadge(u.language)}</span>
+          ${detail.slideStarts?.has(u.id) ? `<button class="utt-slide" data-slide="${detail.slideStarts.get(u.id)}" title="이 슬라이드 보기">📄 ${detail.slideStarts.get(u.id)}쪽</button>` : ""}
           <button class="utt-more" data-menu="more" aria-label="문단 메뉴" title="문단 메뉴">⋯</button>
         </div>
         ${editing ? `
@@ -1053,6 +1574,7 @@ function uttHTML(u, starred = false) {
             </div>
           </div>` : `
           <div class="utt-text">${u.busy ? `<span class="busy-label">다시 받아쓰는 중…</span>` : wordsHTML(u)}</div>`}
+        ${notesHTML(u, notes)}
       </div>
     </div>`;
 }
@@ -1060,11 +1582,14 @@ function uttHTML(u, starred = false) {
 function renderTranscript() {
   const el = $("#transcript");
   if (!el) return;
+  detail.slideStarts = slideStarts();
   const stars = starredIds();
-  const utts = detail.onlyStarred ? detail.data.utterances.filter((u) => stars.has(u.id)) : detail.data.utterances;
+  const notes = noteMap();
+  const utts = detail.onlyStarred ? detail.data.utterances.filter((u) => stars.has(u.id) || notes.has(u.id)) : detail.data.utterances;
   el.innerHTML = utts.length
-    ? utts.map((u) => uttHTML(u, stars.has(u.id))).join("")
+    ? utts.map((u) => uttHTML(u, stars.has(u.id), notes.get(u.id))).join("")
     : `<div class="empty">받아쓴 내용이 없어요. 말소리가 없는 녹음일 수 있어요.</div>`;
+  updateStarFilter();
   if (detail.editing) {
     const ta = $("#edit-text");
     if (ta) { autosize(ta); ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
@@ -1078,7 +1603,7 @@ function replaceUtt(u) {
   const el = view.querySelector(`.utt[data-id="${u.id}"]`);
   if (el) {
     const tmp = document.createElement("div");
-    tmp.innerHTML = uttHTML(u, starredIds().has(u.id)).trim();
+    tmp.innerHTML = uttHTML(u, starredIds().has(u.id), noteMap().get(u.id)).trim();
     el.replaceWith(tmp.firstElementChild);
   }
   renderSpeakers();
@@ -1169,6 +1694,7 @@ function moreMenu(anchor, u) {
   openMenu(anchor, [
     { label: "글자 고치기", icon: "✎", disabled: u.busy, run: () => startEdit(u.id) },
     { label: "여기부터 듣기", icon: "▶", run: () => seek(u.start) },
+    { label: "메모 달기", icon: "📝", run: () => startNote(u) },
     "-",
     { label: "한국어로 다시 받아쓰기", icon: "가", disabled: u.busy, run: () => retranscribe(u, "ko") },
     { label: "영어로 다시 받아쓰기", icon: "A", disabled: u.busy, run: () => retranscribe(u, "en") },
@@ -1318,6 +1844,7 @@ function onTimeUpdate() {
     view.querySelector(".utt.active")?.classList.remove("active");
     detail.activeUtt = cur?.id ?? null;
     if (cur) {
+      followSlide(cur);
       const el = view.querySelector(`.utt[data-id="${cur.id}"]`);
       el?.classList.add("active");
       if (detail.follow && !p.paused && el && !detail.editing) el.scrollIntoView({ block: "center", behavior: "smooth" });
@@ -1340,6 +1867,7 @@ function bindDetail() {
   p.addEventListener("timeupdate", onTimeUpdate);
   $("#speed").addEventListener("change", (e) => { p.playbackRate = Number(e.target.value); });
   $("#follow").addEventListener("change", (e) => { detail.follow = e.target.checked; });
+  $("#slides-btn").addEventListener("click", (e) => { e.stopPropagation(); slidesMenu(e.currentTarget); });
   $("#only-starred").addEventListener("change", (e) => { detail.onlyStarred = e.target.checked; renderTranscript(); });
   updateStarFilter();
 }
@@ -1395,6 +1923,13 @@ function detailClick(e) {
   const menu = e.target.closest("[data-menu]");
   if (menu) { e.stopPropagation(); return menu.dataset.menu === "speaker" ? speakerMenu(menu, u) : moreMenu(menu, u); }
   if (e.target.closest("[data-star]")) return toggleStar(u);
+  const sl = e.target.closest("[data-slide]");
+  if (sl) { detail.slideManualUntil = Date.now() + 20_000; return showSlide(Number(sl.dataset.slide)); }
+  if (e.target.closest("[data-note-new]")) return;
+  const ne = e.target.closest("[data-note-edit]");
+  if (ne) return editNote(ne);
+  const nd = e.target.closest("[data-note-del]");
+  if (nd) return deleteNote(nd);
   const act = e.target.closest("[data-act]")?.dataset.act;
   if (act === "save-edit") return saveEdit();
   if (act === "cancel-edit") return cancelEdit();
@@ -1403,6 +1938,17 @@ function detailClick(e) {
   const w = e.target.closest(".w");
   if (w && !window.getSelection().toString()) return seek(Number(w.dataset.t));
 }
+
+view.addEventListener("keydown", (e) => {
+  const input = e.target.closest?.("[data-note-new]");
+  if (!input) return;
+  if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); saveNewNote(input); }
+  if (e.key === "Escape") { detail.noteDraft = null; renderTranscript(); }
+});
+view.addEventListener("focusout", (e) => {
+  const input = e.target.closest?.("[data-note-new]");
+  if (input && detail.noteDraft) saveNewNote(input);
+});
 
 // 결과 화면에서 스페이스바로 재생/멈춤 (글자 입력 중엔 제외)
 document.addEventListener("keydown", (e) => {
@@ -1459,8 +2005,17 @@ async function renderSearch(q) {
   view.innerHTML = `
     <a class="back" href="#/">← 내 녹음</a>
     <div class="search-results">
-      <h2 class="search-title">‘${esc(r.query)}’ ${r.count ? `${r.count}건${r.count >= 200 ? " 이상" : ""}` : "결과 없음"}</h2>
-      ${r.count ? "" : `<div class="empty">찾는 말이 들어간 문장이 없어요. 띄어쓰기나 철자를 바꿔보세요.</div>`}
+      <h2 class="search-title">‘${esc(r.query)}’ ${r.count ? `${r.count}건${r.count >= 200 ? " 이상" : ""}` : (r.slides?.length ? "" : "결과 없음")}</h2>
+      ${r.count || r.slides?.length ? "" : `<div class="empty">찾는 말이 들어간 문장이 없어요. 띄어쓰기나 철자를 바꿔보세요.</div>`}
+      ${r.slides?.length ? `
+        <section class="card search-group">
+          <div class="search-group-head"><span class="rec-title">📄 강의자료에서</span><span class="rec-meta"><span>${r.slides.length}쪽</span></span></div>
+          ${r.slides.map((h) => `
+            <a class="hit" href="#/r/${h.recording_id}?page=${h.page}">
+              <span class="hit-time">${h.page}쪽</span>
+              <span class="hit-body"><b class="hit-speaker">${esc(h.title)}</b> ${markAll(h.text, r.query)}</span>
+            </a>`).join("")}
+        </section>` : ""}
       ${[...groups.entries()].map(([rid, g]) => `
         <section class="card search-group">
           <div class="search-group-head">
@@ -1513,7 +2068,7 @@ document.addEventListener("keydown", (e) => {
 const CHUNK_MS = 10_000;  // 10초마다 서버에 저장 → 브라우저가 꺼져도 그때까지는 남는다
 
 const recorder = {
-  phase: "idle",          // idle → recording → stopping → finished → idle
+  phase: "idle",          // idle → starting → recording → stopping → finished → idle
   id: null,
   title: "",
   media: null,
@@ -1554,59 +2109,184 @@ function elapsed() {
   return recorder.elapsedMs + (recorder.paused || !recorder.resumedAt ? 0 : Date.now() - recorder.resumedAt);
 }
 
-async function startRecording() {
+const MIC_CONSTRAINTS = { echoCancellation: false, noiseSuppression: false, autoGainControl: true };
+
+function micErrorMessage(err) {
+  const denied = err && (err.name === "NotAllowedError" || err.name === "SecurityError");
+  return denied
+    ? (IN_APP
+      ? "마이크를 쓸 수 없어요. 시스템 설정 › 개인정보 보호 및 보안 › 마이크에서 '까치녹음기'를 켜주세요."
+      : "마이크를 쓸 수 없어요. 브라우저 주소창의 마이크 권한을 허용하고, 시스템 설정 › 개인정보 보호 및 보안 › 마이크에서 브라우저를 켜주세요.")
+    : "마이크를 찾을 수 없어요. 마이크가 연결돼 있는지 확인해 주세요.";
+}
+
+/* 녹음 버튼 → 무엇을 녹음할지 고르는 창. 고른 것을 돌려준다 (취소하면 null) */
+function loadSourcePref() {
+  try { return JSON.parse(localStorage.getItem("kkachi.recordSource") || "{}"); } catch { return {}; }
+}
+function saveSourcePref(p) {
+  try { localStorage.setItem("kkachi.recordSource", JSON.stringify({ ...loadSourcePref(), ...p })); } catch {}
+}
+
+function chooseRecordSource() {
+  const dlg = $("#source-dialog");
+  const body = $("#source-body");
+  const pref = loadSourcePref();
+  const opt = (src, icon, title, sub, disabled = false) => `
+    <button type="button" class="source-opt" data-src="${src}" ${disabled ? "disabled" : ""}>
+      <span class="source-icon">${icon}</span>
+      <span class="source-text"><b>${title}</b><small>${sub}</small></span>
+    </button>`;
+  const micCheck = (checked) => `<label class="toggle source-mic"><input type="checkbox" name="mic" ${checked ? "checked" : ""}><span>내 목소리(마이크)도 같이 녹음</span></label>`;
+
+  const home = () => {
+    const appOpt = IN_APP
+      ? opt("app", "🖥️", "다른 앱 소리", NATIVE_CAPTURE ? "Zoom·유튜브·카카오톡 통화처럼 이 맥에서 나는 소리" : "까치녹음기를 완전히 껐다(⌘Q) 다시 켜면 쓸 수 있어요", !NATIVE_CAPTURE)
+      : opt("app", "🖥️", "다른 앱 소리", "까치녹음기 앱 창에서만 돼요", true);
+    const tabOpt = IN_APP
+      ? opt("chrome", "🌐", "크롬 탭 소리", "크롬에서 열어서 녹음해요 (온라인 강의·유튜브 탭)")
+      : opt("tab", "🌐", "크롬 탭 소리", CAN_TAB ? "온라인 강의·유튜브처럼 크롬 탭에서 나는 소리" : "크롬에서 열었을 때만 돼요", !CAN_TAB);
+    body.innerHTML = `
+      <h3 class="source-title">무엇을 녹음할까요?</h3>
+      <div class="source-list">${opt("mic", "🎙️", "마이크", "강의실·회의처럼 내 주변 소리")}${appOpt}${tabOpt}</div>
+      <div class="dialog-actions"><button type="button" class="btn btn-ghost" data-act="cancel">취소</button></div>`;
+  };
+
+  const appStep = async () => {
+    body.innerHTML = `<h3 class="source-title">어떤 앱 소리를 녹음할까요?</h3><p class="field-hint">앱 목록을 불러오는 중…</p>`;
+    let info;
+    try { info = await nativeCall("capture-apps"); } catch (err) { toast(err.message, "error"); home(); return; }
+    // 최근에 녹음한 앱이 앞으로
+    const recent = pref.recent || [];
+    const rank = (a) => { const i = recent.indexOf(a.bundle); return i < 0 ? recent.length : i; };
+    const apps = [...info.apps].sort((a, b) => rank(a) - rank(b));
+    const chosen = apps.some((a) => a.bundle === pref.bundle) ? pref.bundle : "";
+    const card = (bundle, name, icon, sub = "") => `
+      <label class="app-card" data-name="${esc(name.toLowerCase())}" title="${esc(name)}">
+        <input type="radio" name="app" value="${esc(bundle)}" data-label="${esc(name)}" ${bundle === chosen ? "checked" : ""}>
+        <span class="app-icon">${icon}</span>
+        <span class="app-name">${esc(name)}</span>
+        ${sub ? `<span class="app-sub">${sub}</span>` : ""}
+      </label>`;
+    const appIcon = (a) => a.icon ? `<img src="${a.icon}" alt="">` : `<span class="app-letter">${esc(a.name.slice(0, 1))}</span>`;
+    body.innerHTML = `
+      <h3 class="source-title">어떤 앱 소리를 녹음할까요?</h3>
+      ${info.permitted ? "" : `
+        <div class="source-warn">
+          <span>처음 한 번 맥에서 <b>화면 및 시스템 오디오 녹음</b>을 허용해야 해요. 허용한 뒤에는 까치녹음기를 껐다(⌘Q) 다시 켜주세요.</span>
+          <button type="button" class="btn btn-sm btn-ghost" data-act="permit">권한 허용하기</button>
+        </div>`}
+      ${apps.length > 8 ? `<input class="input app-filter" name="app-filter" placeholder="앱 이름으로 찾기" autocomplete="off">` : ""}
+      <div class="app-grid">
+        ${card("", "맥 전체 소리", `<span class="app-emoji">🖥️</span>`, "모든 앱")}
+        ${apps.map((a) => card(a.bundle, a.name, appIcon(a), recent.includes(a.bundle) ? "최근" : "")).join("")}
+      </div>
+      <p class="field-hint">녹음할 앱이 없으면 그 앱을 먼저 켜고 다시 열어주세요. 고른 앱 소리만 들어가요. 두 번 누르면 바로 시작해요.</p>
+      ${info.mic ? micCheck(pref.mic) : ""}
+      <div class="dialog-actions">
+        <button type="button" class="btn btn-ghost" data-act="back">이전</button>
+        <button type="button" class="btn btn-primary" data-act="start-app">● 녹음 시작</button>
+      </div>`;
+    const filter = body.querySelector("[name=app-filter]");
+    filter?.addEventListener("input", () => {
+      const q = filter.value.trim().toLowerCase();
+      body.querySelectorAll(".app-card").forEach((c) => { c.hidden = !!q && !c.dataset.name.includes(q); });
+    });
+    body.querySelector(".app-grid").ondblclick = (e) => {
+      if (e.target.closest(".app-card")) body.querySelector("[data-act=start-app]").click();
+    };
+    (body.querySelector("[name=app]:checked") || body.querySelector("[name=app]")).focus();
+  };
+
+  const tabStep = () => {
+    body.innerHTML = `
+      <h3 class="source-title">크롬 탭 소리 녹음</h3>
+      <p class="field-hint">녹음할 탭(온라인 강의·유튜브)을 먼저 열어두세요. 시작하면 크롬이 아래 같은 창을 띄워요.</p>
+      <div class="chrome-mock" aria-hidden="true">
+        <div class="cm-head">공유할 항목을 고르세요</div>
+        <div class="cm-tabs"><span class="on">Chrome 탭<i class="cm-n">1</i></span><span>창</span><span>전체 화면</span></div>
+        <div class="cm-list">
+          <div class="cm-item on"><span class="cm-fav cm-red">▶</span>강의 영상 - YouTube<i class="cm-n">2</i></div>
+          <div class="cm-item"><span class="cm-fav">📄</span>다른 탭</div>
+        </div>
+        <div class="cm-foot">
+          <span class="cm-audio"><span class="cm-switch"></span>탭 오디오도 공유<i class="cm-n">3</i></span>
+          <span class="cm-btns"><span class="cm-btn">취소</span><span class="cm-btn cm-primary">공유<i class="cm-n">4</i></span></span>
+        </div>
+      </div>
+      <ol class="source-steps cm-steps">
+        <li><b>Chrome 탭</b>을 눌러요.</li>
+        <li>녹음할 탭을 골라요.</li>
+        <li><b>탭 오디오도 공유</b>가 켜져 있는지 봐요. 꺼져 있으면 소리가 안 들어가요.</li>
+        <li><b>공유</b>를 누르면 녹음이 시작돼요. 끝낼 땐 크롬 위쪽의 <b>공유 중지</b>나 ■ 녹음 끝내기.</li>
+      </ol>
+      ${micCheck(pref.tabMic)}
+      <p class="field-hint">마이크를 같이 켤 땐 이어폰을 끼면 소리가 두 번 겹치지 않아요.</p>
+      <div class="dialog-actions">
+        <button type="button" class="btn btn-ghost" data-act="back">이전</button>
+        <button type="button" class="btn btn-primary" data-act="start-tab">공유 창 열기</button>
+      </div>`;
+  };
+
+  return new Promise((resolve) => {
+    const finish = (src) => {
+      body.onclick = dlg.oncancel = null;
+      dlg.close();
+      resolve(src);
+    };
+    body.onclick = async (e) => {
+      const b = e.target.closest("[data-src], [data-act]");
+      if (!b || b.disabled) return;
+      const mic = !!body.querySelector("[name=mic]")?.checked;
+      switch (b.dataset.src || b.dataset.act) {
+        case "mic": finish({ kind: "mic" }); break;
+        case "app": appStep(); break;
+        case "tab": tabStep(); break;
+        case "chrome": finish(null); openInChrome(); break;
+        case "cancel": finish(null); break;
+        case "back": home(); break;
+        case "permit":
+          try { if ((await nativeCall("capture-permission")).permitted) appStep(); } catch {}
+          break;
+        case "start-app": {
+          const sel = body.querySelector("[name=app]:checked");
+          const bundle = sel?.value || "";
+          const recent = bundle ? [bundle, ...(pref.recent || []).filter((x) => x !== bundle)].slice(0, 5) : pref.recent;
+          saveSourcePref({ bundle, mic, recent });
+          finish({ kind: "app", bundle, name: bundle ? sel.dataset.label : "맥 전체", mic });
+          break;
+        }
+        case "start-tab":
+          saveSourcePref({ tabMic: mic });
+          finish({ kind: "tab", mic });
+          break;
+      }
+    };
+    dlg.oncancel = (e) => { e.preventDefault(); finish(null); };  // Esc
+    home();
+    dlg.showModal();
+  });
+}
+
+/* source.kind: mic(마이크) · tab(크롬 탭 소리, 브라우저에서) · app(다른 앱 소리, 앱 창에서) */
+async function startRecording(source = { kind: "mic" }) {
   if (recorder.phase !== "idle") return;
   if (state.pendingFile) { toast("올리던 파일을 먼저 처리하거나 취소해 주세요.", "error"); return; }
-  const fmt = pickMime();
-  if (!navigator.mediaDevices?.getUserMedia || !fmt) {
-    toast(IN_APP
-      ? "이 맥에서는 앱 창 녹음을 쓸 수 없어요. 메뉴의 '브라우저에서 열기'로 열어서 녹음해 주세요."
-      : "이 브라우저에서는 녹음을 할 수 없어요. 크롬이나 사파리에서 열어주세요.", "error");
-    return;
-  }
-
-  let stream;
-  try {
-    // 강의실 먼 소리도 살리도록 잡음 제거·에코 제거는 끄고, 소리 크기 자동 조절만 켠다
-    stream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: true },
-    });
-  } catch (err) {
-    const denied = err && (err.name === "NotAllowedError" || err.name === "SecurityError");
-    toast(denied
-      ? (IN_APP
-        ? "마이크를 쓸 수 없어요. 시스템 설정 › 개인정보 보호 및 보안 › 마이크에서 '까치녹음기'를 켜주세요."
-        : "마이크를 쓸 수 없어요. 브라우저 주소창의 마이크 권한을 허용하고, 시스템 설정 › 개인정보 보호 및 보안 › 마이크에서 브라우저를 켜주세요.")
-      : "마이크를 찾을 수 없어요. 마이크가 연결돼 있는지 확인해 주세요.", "error");
-    return;
-  }
-
+  // 권한 창·서버 응답을 기다리는 사이에 버튼을 또 누르면 녹음이 두 개 생긴다 → 바로 막아 둔다
+  recorder.phase = "starting";
   const title = defaultRecordTitle();
-  let rec;
+  let ok = false;
   try {
-    const fd = new FormData();
-    fd.append("title", title);
-    fd.append("container", fmt.container);
-    rec = await api("/api/live", { method: "POST", body: fd });
+    ok = source.kind === "app" ? await startAppCapture(source, title) : await startBrowserCapture(source, title);
   } catch (err) {
-    stream.getTracks().forEach((t) => t.stop());
     toast(err.message, "error");
-    return;
   }
+  if (!ok) { recorder.phase = "idle"; return; }
+  afterRecordingStarted();
+}
 
-  Object.assign(recorder, {
-    phase: "recording", id: rec.id, title, stream, seq: 0, queue: [], offline: false,
-    elapsedMs: 0, resumedAt: Date.now(), paused: false,
-    marks: [], quietSince: null, quietWarned: false, power: null, powerWarned: false,
-  });
-
-  const media = new MediaRecorder(stream, { mimeType: fmt.mime, audioBitsPerSecond: 64000 });
-  media.ondataavailable = (e) => { if (e.data && e.data.size) enqueueChunk(e.data); };
-  media.onerror = () => toast("녹음 중에 문제가 생겼어요. 지금까지 녹음된 부분은 저장돼 있어요.", "error");
-  media.start(CHUNK_MS);
-  recorder.media = media;
-
-  setupLevelMeter(stream);
+function afterRecordingStarted() {
+  setupLevelMeter(recorder.stream);
   window.addEventListener("beforeunload", warnBeforeUnload);
   if (location.hash.startsWith("#/r/")) location.hash = "#/";
   else renderUploadArea();
@@ -1614,6 +2294,187 @@ async function startRecording() {
   checkPower();
   recorder.powerTimer = setInterval(checkPower, 60_000);
   refresh();
+}
+
+function beginRecorder(id, title, source, extra = {}) {
+  Object.assign(recorder, {
+    phase: "recording", id, title, source, seq: 0, queue: [], offline: false,
+    elapsedMs: 0, resumedAt: Date.now(), paused: false,
+    marks: [], quietSince: null, quietWarned: false, power: null, powerWarned: false,
+    nativeDb: null, nativeSaved: 0, notes: [], noteT: null, ...extra,
+  });
+}
+
+function createLiveSession(title, container) {
+  const fd = new FormData();
+  fd.append("title", title);
+  fd.append("container", container);
+  return api("/api/live", { method: "POST", body: fd });
+}
+
+/* 브라우저(MediaRecorder)로 녹음: 마이크, 또는 크롬 탭 소리(+마이크) */
+async function startBrowserCapture(source, title) {
+  const fmt = pickMime();
+  if (!navigator.mediaDevices?.getUserMedia || !fmt) {
+    toast(IN_APP
+      ? "이 맥에서는 앱 창 녹음을 쓸 수 없어요. 메뉴의 '브라우저에서 열기'로 열어서 녹음해 주세요."
+      : "이 브라우저에서는 녹음을 할 수 없어요. 크롬이나 사파리에서 열어주세요.", "error");
+    return false;
+  }
+  const input = source.kind === "tab" ? await openTabAudio(source.mic) : await openMic();
+  if (!input) return false;
+
+  let rec;
+  try {
+    rec = await createLiveSession(title, fmt.container);
+  } catch (err) {
+    input.release();
+    throw err;
+  }
+  beginRecorder(rec.id, title, source, { stream: input.stream, release: input.release });
+
+  const media = new MediaRecorder(input.stream, { mimeType: fmt.mime, audioBitsPerSecond: 64000 });
+  media.ondataavailable = (e) => { if (e.data && e.data.size) enqueueChunk(e.data); };
+  media.onerror = () => toast("녹음 중에 문제가 생겼어요. 지금까지 녹음된 부분은 저장돼 있어요.", "error");
+  media.start(CHUNK_MS);
+  recorder.media = media;
+
+  // 크롬 위쪽의 '공유 중지'를 누르거나 녹음하던 탭을 닫으면 녹음도 끝낸다
+  for (const t of input.ends || []) {
+    t.addEventListener("ended", () => {
+      if (recorder.phase !== "recording" || recorder.id !== rec.id) return;
+      toast("탭 공유가 끝나서 녹음을 멈췄어요.");
+      stopRecording();
+    });
+  }
+  return true;
+}
+
+async function openMic() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: MIC_CONSTRAINTS });
+    return { stream, release: () => stream.getTracks().forEach((t) => t.stop()) };
+  } catch (err) {
+    toast(micErrorMessage(err), "error");
+    return null;
+  }
+}
+
+/* 크롬 탭 소리: 화면 공유 창에서 탭을 고르고 '탭 오디오도 공유'를 켜면 그 소리가 들어온다 */
+async function openTabAudio(withMic) {
+  if (!navigator.mediaDevices?.getDisplayMedia) {
+    toast("이 브라우저에서는 탭 소리를 녹음할 수 없어요. 크롬에서 열어주세요.", "error");
+    return null;
+  }
+  let display;
+  try {
+    display = await navigator.mediaDevices.getDisplayMedia({
+      video: true,  // 소리만 따로 공유할 수는 없어서 화면도 받지만 녹음에는 안 쓴다
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, suppressLocalAudioPlayback: false },
+      preferCurrentTab: false,
+      selfBrowserSurface: "exclude",
+      surfaceSwitching: "include",
+      systemAudio: "include",
+    });
+  } catch (err) {
+    if (err?.name !== "NotAllowedError") toast("화면 공유를 시작하지 못했어요.", "error");  // 취소는 조용히
+    return null;
+  }
+  const stopDisplay = () => display.getTracks().forEach((t) => t.stop());
+  const tabAudio = display.getAudioTracks()[0];
+  if (!tabAudio) {
+    stopDisplay();
+    toast("소리가 공유되지 않았어요. 공유 창에서 '탭' 을 고르고 아래의 '탭 오디오도 공유'를 켜주세요.", "error");
+    return null;
+  }
+  if (!withMic) return { stream: new MediaStream([tabAudio]), release: stopDisplay, ends: display.getTracks() };
+
+  let mic;
+  try {
+    // 내 목소리는 가까이서 말하니 잡음·울림 제거를 켠다
+    mic = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+  } catch (err) {
+    stopDisplay();
+    toast(micErrorMessage(err), "error");
+    return null;
+  }
+  const ctx = new AudioContext();
+  ctx.resume().catch(() => {});
+  const dest = ctx.createMediaStreamDestination();
+  ctx.createMediaStreamSource(new MediaStream([tabAudio])).connect(dest);
+  ctx.createMediaStreamSource(mic).connect(dest);
+  return {
+    stream: dest.stream,
+    ends: display.getTracks(),
+    release: () => {
+      stopDisplay();
+      mic.getTracks().forEach((t) => t.stop());
+      ctx.close().catch(() => {});
+    },
+  };
+}
+
+/* 다른 앱 소리: 앱 창(실행기)이 직접 받아서 서버로 보낸다. 화면은 상태만 보여준다 */
+async function startAppCapture(source, title) {
+  const rec = await createLiveSession(title, "pcm");
+  let res;
+  try {
+    res = await nativeCall("capture-start", { id: rec.id, bundle: source.bundle || "", name: source.name, mic: !!source.mic });
+  } catch (err) {
+    res = { ok: false, message: err.message };
+  }
+  if (!res?.ok) {
+    api(`/api/recordings/${rec.id}`, { method: "DELETE" }).catch(() => {});
+    toast(res?.message || "앱 소리를 녹음하지 못했어요.", "error");
+    return false;
+  }
+  beginRecorder(rec.id, title, source);
+  return true;
+}
+
+// 앱(실행기)이 보내는 녹음 상태: 소리 크기·저장된 시간 / 맥 사정으로 멈춤
+window.kkachiNative = (e) => {
+  if (e.type === "capture-level") {
+    recorder.nativeDb = e.db;
+    recorder.nativeSaved = e.saved;
+    recorder.offline = e.offline;
+  } else if (e.type === "capture-ended" && recorder.phase === "recording" && recorder.source?.kind === "app") {
+    toast(e.message, "error");
+    stopRecording();
+  }
+};
+
+// 화면을 새로고침해도 앱은 계속 녹음 중일 수 있다 → 녹음 화면을 되살린다
+async function restoreAppCapture() {
+  if (!NATIVE_CAPTURE) return;
+  let s;
+  try { s = await nativeCall("capture-status"); } catch { return; }
+  if (!s || recorder.phase !== "idle") return;
+  let title = "";
+  try { title = (await api(`/api/recordings/${s.id}`)).title; } catch {}
+  beginRecorder(s.id, title, { kind: "app", name: s.app, mic: s.mic },
+    { elapsedMs: s.elapsed, paused: s.paused, resumedAt: Date.now() });
+  afterRecordingStarted();
+}
+
+function recNotesHTML() {
+  return (recorder.notes || []).slice(-3).map((n) => `<li><span>${fmtClock(n.t)}</span> ${esc(n.text)}</li>`).join("");
+}
+
+async function addRecordingNote() {
+  const input = $("#rec-note");
+  const text = input.value.trim();
+  if (!text || recorder.phase !== "recording") return;
+  const t = recorder.noteT ?? Math.max(0, elapsed() / 1000 - 1);
+  input.value = "";
+  recorder.noteT = null;
+  recorder.notes.push({ t, text });
+  $("#rec-notes").innerHTML = recNotesHTML();
+  try {
+    await api(`/api/recordings/${recorder.id}/notes`, jsonOpts("POST", { t, text }));
+  } catch {
+    toast("메모를 저장하지 못했어요. 다시 적어주세요.", "error");
+  }
 }
 
 /* 중요 표시: 녹음 중 스페이스바나 ⭐ 버튼. 녹음 시간(일시정지 뺀 시간) 기준으로 저장 */
@@ -1643,18 +2504,32 @@ async function checkPower() {
 
 /* 무음 감지: 30초 넘게 소리가 거의 없으면 경고 (창이 숨겨져도 동작하도록 타이머에서 잰다) */
 function sampleQuiet() {
-  if (!recorder.analyser || recorder.paused || recorder.phase !== "recording") { recorder.quietSince = null; return; }
-  const buf = new Float32Array(1024);
-  recorder.analyser.getFloatTimeDomainData(buf);
-  let sum = 0;
-  for (const v of buf) sum += v * v;
-  const db = 20 * Math.log10(Math.sqrt(sum / buf.length) + 1e-8);
+  const db = recorder.paused || recorder.phase !== "recording" ? null : currentDb();
+  if (db == null) { recorder.quietSince = null; return; }
   if (db > -55) { recorder.quietSince = null; recorder.quietWarned = false; return; }
   recorder.quietSince ??= Date.now();
   if (Date.now() - recorder.quietSince > 30_000 && !recorder.quietWarned) {
     recorder.quietWarned = true;
-    nativeNotify("녹음에 소리가 안 들려요 🔇", "30초째 소리가 거의 없어요. 마이크가 가려지거나 꺼지지 않았는지 확인해 주세요.");
+    nativeNotify("녹음에 소리가 안 들려요 🔇", quietMessage());
   }
+}
+
+function quietMessage() {
+  const kind = recorder.source?.kind;
+  if (kind === "app") return `30초째 소리가 거의 없어요. ${recorder.source.name || "녹음하는 앱"}에서 소리가 나고 있는지 확인해 주세요.`;
+  if (kind === "tab") return "30초째 소리가 거의 없어요. 녹음하는 탭에서 소리가 나고 있는지 확인해 주세요.";
+  return "30초째 소리가 거의 없어요. 마이크가 가려지거나 꺼지지 않았는지 확인해 주세요.";
+}
+
+// 지금 소리 크기(dB). 앱 소리 녹음은 실행기가 알려주고, 나머지는 브라우저에서 잰다
+function currentDb() {
+  if (recorder.source?.kind === "app") return recorder.nativeDb;
+  if (!recorder.analyser) return null;
+  const buf = new Float32Array(1024);
+  recorder.analyser.getFloatTimeDomainData(buf);
+  let sum = 0;
+  for (const v of buf) sum += v * v;
+  return 20 * Math.log10(Math.sqrt(sum / buf.length) + 1e-8);
 }
 
 function warnBeforeUnload(e) {
@@ -1663,23 +2538,21 @@ function warnBeforeUnload(e) {
 }
 
 function setupLevelMeter(stream) {
-  try {
-    recorder.audioCtx = new AudioContext();
-    const src = recorder.audioCtx.createMediaStreamSource(stream);
-    recorder.analyser = recorder.audioCtx.createAnalyser();
-    recorder.analyser.fftSize = 1024;
-    src.connect(recorder.analyser);
-  } catch {
-    recorder.analyser = null;
+  if (stream) {
+    try {
+      recorder.audioCtx = new AudioContext();
+      const src = recorder.audioCtx.createMediaStreamSource(stream);
+      recorder.analyser = recorder.audioCtx.createAnalyser();
+      recorder.analyser.fftSize = 1024;
+      src.connect(recorder.analyser);
+    } catch {
+      recorder.analyser = null;
+    }
   }
-  const buf = new Float32Array(1024);
   const draw = () => {
     const meter = $("#level-meter > div");
-    if (meter && recorder.analyser) {
-      recorder.analyser.getFloatTimeDomainData(buf);
-      let sum = 0;
-      for (const v of buf) sum += v * v;
-      const db = 20 * Math.log10(Math.sqrt(sum / buf.length) + 1e-8);
+    const db = currentDb();
+    if (meter && db != null) {
       const level = recorder.paused ? 0 : Math.max(0, Math.min(1, (db + 60) / 50));
       meter.style.width = `${level * 100}%`;
     }
@@ -1715,14 +2588,18 @@ async function pumpChunks() {
 }
 
 function togglePause() {
+  if (recorder.phase !== "recording") return;
+  const app = recorder.source?.kind === "app";
   const m = recorder.media;
-  if (!m) return;
+  if (!app && !m) return;
   if (recorder.paused) {
-    m.resume();
+    if (app) nativeCall("capture-resume").catch(() => {});
+    else m.resume();
     recorder.paused = false;
     recorder.resumedAt = Date.now();
   } else {
-    m.pause();
+    if (app) nativeCall("capture-pause").catch(() => {});
+    else m.pause();
     recorder.elapsedMs = elapsed();
     recorder.paused = true;
   }
@@ -1736,10 +2613,15 @@ async function stopRecording() {
   recorder.phase = "stopping";
   renderUploadArea();
 
-  await new Promise((resolve) => {
-    recorder.media.addEventListener("stop", resolve, { once: true });
-    recorder.media.stop();  // 마지막 조각이 ondataavailable 로 한 번 더 온다
-  });
+  if (recorder.source?.kind === "app") {
+    // 앱이 남은 소리를 서버에 다 보낸 뒤에 답한다
+    try { await nativeCall("capture-stop"); } catch {}
+  } else {
+    await new Promise((resolve) => {
+      recorder.media.addEventListener("stop", resolve, { once: true });
+      recorder.media.stop();  // 마지막 조각이 ondataavailable 로 한 번 더 온다
+    });
+  }
   cleanupMedia();
   // 남은 조각을 다 보낼 때까지 기다린다
   while (recorder.queue.length || recorder.sending) await new Promise((r) => setTimeout(r, 200));
@@ -1753,15 +2635,38 @@ function cleanupMedia() {
   clearInterval(recorder.powerTimer);
   cancelAnimationFrame(recorder.raf);
   recorder.stream?.getTracks().forEach((t) => t.stop());
+  recorder.release?.();
   recorder.audioCtx?.close().catch(() => {});
-  Object.assign(recorder, { stream: null, media: null, audioCtx: null, analyser: null });
+  Object.assign(recorder, { stream: null, release: null, media: null, audioCtx: null, analyser: null });
 }
 
 function resetRecorder() {
   cleanupMedia();
   window.removeEventListener("beforeunload", warnBeforeUnload);
-  Object.assign(recorder, { phase: "idle", id: null, queue: [], seq: 0, elapsedMs: 0, paused: false });
+  Object.assign(recorder, { phase: "idle", id: null, source: null, queue: [], seq: 0, elapsedMs: 0, paused: false });
   renderUploadArea();
+}
+
+function sourceLabel(src) {
+  if (src?.kind === "app") return `🖥️ ${src.name || "맥 전체"} 소리${src.mic ? " + 내 목소리" : ""}`;
+  if (src?.kind === "tab") return `🌐 크롬 탭 소리${src.mic ? " + 내 목소리" : ""}`;
+  return "🎙️ 마이크";
+}
+
+function recordingTips() {
+  const kind = recorder.source?.kind;
+  const lid = "맥북 뚜껑을 닫으면 녹음이 멈춰요. 긴 강의는 충전기를 연결해 두세요.";
+  if (kind === "tab") return [
+    "크롬 위쪽의 '공유 중지'를 누르거나 녹음하는 탭을 닫으면 녹음이 끝나요.",
+    "이 까치녹음기 탭은 닫지 마세요. 닫으면 그때까지만 저장돼요.",
+    lid,
+  ];
+  if (kind === "app") return [
+    "이어폰을 써도 녹음돼요. 녹음하는 앱을 끄면 소리가 더 안 들어와요.",
+    "창을 닫아도 녹음은 계속돼요. 끝낼 땐 Dock 의 까치녹음기를 눌러 창을 다시 여세요.",
+    lid,
+  ];
+  return [lid, IN_APP ? "창을 닫아도 녹음은 계속돼요. 끝낼 땐 Dock 의 까치녹음기를 눌러 창을 다시 여세요." : "이 창을 닫아도 그때까지 녹음된 부분은 저장돼요."];
 }
 
 function renderRecordingPanel(area) {
@@ -1772,24 +2677,33 @@ function renderRecordingPanel(area) {
         <span class="rec-live ${recorder.paused ? "paused" : ""}" id="rec-live">${stopping ? "저장 중" : recorder.paused ? "일시정지" : "녹음 중"}</span>
         <span class="rec-saved" id="rec-saved"></span>
       </div>
+      <div class="rec-source">${esc(sourceLabel(recorder.source))}</div>
       <div class="rec-timer" id="rec-timer">${fmtClock(elapsed() / 1000)}</div>
       <div class="level" id="level-meter" aria-hidden="true"><div></div></div>
       <div class="rec-warn" id="rec-warn" hidden></div>
       <button class="btn btn-star" id="btn-mark" ${stopping ? "disabled" : ""} title="교수님이 중요하다고 할 때 눌러두면 결과에서 ⭐로 찾을 수 있어요">
         ⭐ 중요! <span class="mark-count">${recorder.marks?.length || 0}</span><small>스페이스바</small>
       </button>
+      <form class="rec-note" id="rec-note-form">
+        <input class="input" id="rec-note" maxlength="500" autocomplete="off" ${stopping ? "disabled" : ""}
+          placeholder="📝 메모 적고 Enter (예: 시험에 나온대요)">
+      </form>
+      <ul class="rec-notes" id="rec-notes">${recNotesHTML()}</ul>
       <div class="rec-actions">
         <button class="btn btn-ghost btn-lg" id="btn-pause" ${stopping ? "disabled" : ""}>${recorder.paused ? "▶ 계속" : "❚❚ 일시정지"}</button>
         <button class="btn btn-danger btn-lg" id="btn-stop" ${stopping ? "disabled" : ""}>■ 녹음 끝내기</button>
       </div>
-      <ul class="rec-tips">
-        <li>맥북 뚜껑을 닫으면 녹음이 멈춰요. 긴 강의는 충전기를 연결해 두세요.</li>
-        <li>${IN_APP ? "창을 닫아도 녹음은 계속돼요. 끝낼 땐 Dock 의 까치녹음기를 눌러 창을 다시 여세요." : "이 창을 닫아도 그때까지 녹음된 부분은 저장돼요."}</li>
-      </ul>
+      <ul class="rec-tips">${recordingTips().map((t) => `<li>${esc(t)}</li>`).join("")}</ul>
     </section>`;
   $("#btn-pause").addEventListener("click", togglePause);
   $("#btn-stop").addEventListener("click", stopRecording);
   $("#btn-mark").addEventListener("click", markImportant);
+  // 메모 시간은 '적기 시작한 때'로 (다 적고 Enter 누를 땐 이미 지나갔으니)
+  $("#rec-note").addEventListener("input", (e) => {
+    if (e.target.value.trim()) recorder.noteT ??= Math.max(0, elapsed() / 1000 - 1);
+    else recorder.noteT = null;
+  });
+  $("#rec-note-form").addEventListener("submit", (e) => { e.preventDefault(); addRecordingNote(); });
   updateRecordingPanel();
 }
 
@@ -1804,9 +2718,12 @@ function updateRecordingPanel() {
     $("#btn-pause").textContent = recorder.paused ? "▶ 계속" : "❚❚ 일시정지";
   }
   const saved = $("#rec-saved");
+  const savedSec = recorder.source?.kind === "app"
+    ? recorder.nativeSaved
+    : (recorder.seq - recorder.queue.length) * CHUNK_MS / 1000;
   saved.textContent = recorder.offline
     ? "⚠ 앱과 연결이 끊겨서 다시 시도 중이에요"
-    : recorder.seq ? `${fmtClock((recorder.seq - recorder.queue.length) * CHUNK_MS / 1000)}까지 안전하게 저장됨` : "";
+    : savedSec ? `${fmtClock(savedSec)}까지 안전하게 저장됨` : "";
   saved.classList.toggle("warn", recorder.offline);
 
   sampleQuiet();
@@ -1816,7 +2733,7 @@ function updateRecordingPanel() {
     warns.push(`🔌 충전기가 연결돼 있지 않아요 (배터리 ${p.percent}%). 긴 강의는 충전기를 꽂아주세요.`);
   }
   if (recorder.quietSince && Date.now() - recorder.quietSince > 30_000) {
-    warns.push("🔇 30초째 소리가 거의 안 들려요. 마이크가 가려지거나 꺼지지 않았는지 확인해 주세요.");
+    warns.push(`🔇 ${quietMessage()}`);
   }
   const w = $("#rec-warn");
   if (w) {
@@ -1861,6 +2778,7 @@ function renderRecordedForm(area) {
     appendOptions(fd, form);
     try {
       await api(`/api/live/${recorder.id}/finish`, { method: "POST", body: fd });
+      if (form._slides) attachSlides(recorder.id, form._slides);
       toast("녹음을 저장했어요. 받아쓰기가 끝나면 목록에서 열 수 있어요.");
       resetRecorder();
       refresh();
@@ -1909,10 +2827,15 @@ async function settingsMenu(anchor) {
   let info = null;
   try { info = await api("/api/app"); } catch {}
   const v = info?.version;
-  const vLabel = v?.commit ? `버전 ${v.commit} · ${new Date(v.date).toLocaleDateString("ko-KR", { month: "long", day: "numeric" })}` : "버전 정보 없음";
+  const vLabel = v?.commit
+    ? `버전 ${v.release ? `${v.release} (${v.commit})` : v.commit} · ${new Date(v.date).toLocaleDateString("ko-KR", { month: "long", day: "numeric" })}`
+    : "버전 정보 없음";
   openMenu(anchor, [
     { label: "업데이트 확인", icon: "↻", run: checkUpdate },
+    { label: "새로 바뀐 점", icon: "✨", run: showAllNotes },
     { label: "사용법 보기", icon: "?", run: () => showGuide(0) },
+    { label: "아이폰 음성 메모 가져오기", icon: "📱", run: voiceMemoDialog },
+    ...(IN_APP ? [{ label: "크롬에서 열기", icon: "🌐", run: openInChrome }] : []),
     { label: "문제 신고용 로그 저장", icon: "🧾", run: saveLogs },
     "-",
     { label: vLabel, icon: "ⓘ", disabled: true, run: () => {} },
@@ -1926,7 +2849,11 @@ async function checkUpdate() {
   try { r = await api("/api/app/update"); } catch (err) { toast(err.message, "error"); return; }
   if (r.available === null) { toast(r.message, "error"); return; }
   if (!r.available) { toast("지금이 최신 버전이에요."); return; }
-  const list = r.changes.map((c) => `<li>${esc(c)}</li>`).join("");
+  // 업데이트 노트가 있으면 쉬운 설명을, 없으면 커밋 제목을 보여준다
+  const items = (r.notes || []).flatMap((n) => n.items);
+  const list = items.length
+    ? items.map((it) => `<li class="note-li"><span>${it.icon || "✨"}</span><span><b>${esc(it.title)}</b><br><small>${it.text}</small></span></li>`).join("")
+    : r.changes.map((c) => `<li>${esc(c)}</li>`).join("");
   const ok = await confirmDialog(
     `<b>새 버전이 있어요.</b><ul class="change-list">${list}</ul><span class="field-hint">업데이트하면 앱이 잠깐 다시 시작돼요. 1~2분쯤 걸릴 수 있어요.</span>`,
     "지금 업데이트", { html: true, primary: true, cancelLabel: "나중에" });
@@ -1980,7 +2907,7 @@ async function quitApp() {
 
 const GUIDE = [
   { icon: "🎙️", title: "강의 녹음하기",
-    text: "강의가 시작되면 위의 <b>● 녹음하기</b>를 누르세요.<br>10초마다 저장돼서 중간에 창이 꺼져도 괜찮아요.<br><b>맥북 뚜껑은 닫지 마세요.</b> 녹음이 멈춰요." },
+    text: "강의가 시작되면 위의 <b>● 녹음하기</b>를 누르세요.<br>Zoom·유튜브 같은 <b>다른 앱 소리</b>도 녹음할 수 있어요.<br>10초마다 저장돼서 중간에 창이 꺼져도 괜찮아요.<br><b>맥북 뚜껑은 닫지 마세요.</b> 녹음이 멈춰요." },
   { icon: "📁", title: "녹음 파일 올리기",
     text: "휴대폰으로 녹음한 파일도 화면에 <b>끌어다 놓으면</b> 돼요.<br>받아쓰기는 인터넷 없이 이 맥에서 해요.<br>1시간 강의에 5~10분쯤 걸려요." },
   { icon: "✏️", title: "고치고 찾기",
@@ -1988,9 +2915,20 @@ const GUIDE = [
 ];
 let guideStep = 0;
 let guidePages = GUIDE;
+let guideDone = { label: "시작하기", onClose: markGuideSeen };
+
+function markGuideSeen() {
+  try { localStorage.setItem("kkachi.guide.v1", "seen"); } catch {}
+}
 
 function showGuide(step = 0) {
-  guidePages = GUIDE;
+  showPages(GUIDE, { label: "시작하기", onClose: markGuideSeen }, step);
+}
+
+/* 넘겨 보는 안내 창 (사용법 / 새로 바뀐 점). 마지막 장의 버튼 글자와 닫힐 때 할 일을 정한다 */
+function showPages(pages, done, step = 0) {
+  guidePages = pages;
+  guideDone = done;
   guideStep = step;
   renderGuide();
   const dlg = $("#guide-dialog");
@@ -1999,25 +2937,53 @@ function showGuide(step = 0) {
 
 function renderGuide() {
   const g = guidePages[guideStep];
-  $("#guide-steps").innerHTML = `<div class="guide-icon">${g.icon}</div><h2>${g.title}</h2><p>${g.text}</p>`;
+  $("#guide-steps").innerHTML = `${g.kicker ? `<div class="guide-kicker">${esc(g.kicker)}</div>` : ""}`
+    + `<div class="guide-icon">${g.icon}</div><h2>${g.title}</h2><p>${g.text}</p>`;
   $("#guide-dots").innerHTML = guidePages.length > 1
     ? guidePages.map((_, i) => `<span class="${i === guideStep ? "on" : ""}"></span>`).join("") : "";
   $("#guide-prev").style.visibility = guideStep ? "visible" : "hidden";
-  $("#guide-next").textContent = guideStep === guidePages.length - 1 ? "시작하기" : "다음";
+  $("#guide-next").textContent = guideStep === guidePages.length - 1 ? guideDone.label : "다음";
 }
 
 $("#guide-prev").addEventListener("click", () => { guideStep = Math.max(0, guideStep - 1); renderGuide(); });
 $("#guide-next").addEventListener("click", () => {
   if (guideStep < guidePages.length - 1) { guideStep++; renderGuide(); return; }
   $("#guide-dialog").close();
-  try { localStorage.setItem("kkachi.guide.v1", "seen"); } catch {}
+  guideDone.onClose?.();
 });
-$("#guide-dialog").addEventListener("cancel", () => { try { localStorage.setItem("kkachi.guide.v1", "seen"); } catch {} });
+$("#guide-dialog").addEventListener("cancel", () => guideDone.onClose?.());
 
 function maybeShowGuide() {
   let seen = false;
   try { seen = localStorage.getItem("kkachi.guide.v1") === "seen"; } catch {}
-  if (!seen) showGuide(0);
+  if (!seen) { showGuide(0); return true; }
+  return false;
+}
+
+/* 업데이트 노트: 노트(날짜별 묶음) → 넘겨 보는 장들 */
+function notePages(notes) {
+  return notes.flatMap((n) => n.items.map((it) => ({
+    kicker: `새로 바뀐 점 · ${n.version ? `버전 ${n.version}` : new Date(n.date).toLocaleDateString("ko-KR", { month: "long", day: "numeric" })}`,
+    icon: it.icon || "✨", title: esc(it.title), text: it.text,
+  })));
+}
+
+// 업데이트 뒤 처음 켜면 새로 바뀐 점을 한 번 보여준다
+async function maybeShowWhatsNew() {
+  let r;
+  try { r = await api("/api/app/whatsnew"); } catch { return; }
+  const unseen = r.notes.filter((n) => r.unseen.includes(n.id));
+  const pages = notePages(unseen);
+  if (!pages.length) return;
+  showPages(pages, { label: "확인", onClose: () => api("/api/app/whatsnew/seen", { method: "POST" }).catch(() => {}) });
+}
+
+async function showAllNotes() {
+  let r;
+  try { r = await api("/api/app/whatsnew"); } catch (err) { toast(err.message, "error"); return; }
+  const pages = notePages(r.notes.slice(0, 3));
+  if (!pages.length) { toast("아직 업데이트 노트가 없어요."); return; }
+  showPages(pages, { label: "닫기" });
 }
 
 $("#btn-settings").addEventListener("click", (e) => { e.stopPropagation(); settingsMenu(e.currentTarget); });
@@ -2049,9 +3015,12 @@ async function loadSubjects() {
 
 /* ---------- 파일 선택 / 끌어다 놓기 ---------- */
 
-$("#btn-upload").addEventListener("click", pickFile);
-$("#btn-record").addEventListener("click", () => {
-  if (recorder.phase === "idle") startRecording();
+$("#btn-upload").addEventListener("click", chooseUploadSource);
+$("#btn-record").addEventListener("click", async () => {
+  if (recorder.phase === "idle") {
+    const source = await chooseRecordSource();
+    if (source) startRecording(source);
+  }
   else if (location.hash.startsWith("#/r/")) location.hash = "#/";
 });
 $("#file-input").addEventListener("change", (e) => acceptFile(e.target.files[0]));
@@ -2077,8 +3046,10 @@ loadSubjects();
   try { state.gift = await api("/api/app/gift"); } catch {}
   applyGiftBranding();
   route();
-  maybeShowGuide();
+  if (!maybeShowGuide()) maybeShowWhatsNew();
 })();
+
+restoreAppCapture();
 
 // 이 화면에서 녹음이 되는지 서버 로그에 남긴다 (문제 신고 때 확인용)
 fetch("/api/app/client", {
@@ -2089,6 +3060,8 @@ fetch("/api/app/client", {
     mediaRecorder: typeof MediaRecorder !== "undefined",
     mime: pickMime()?.mime || null,
     getUserMedia: !!navigator.mediaDevices?.getUserMedia,
+    nativeCapture: NATIVE_CAPTURE,
+    tabAudio: CAN_TAB,
     ua: navigator.userAgent,
   }),
 }).catch(() => {});

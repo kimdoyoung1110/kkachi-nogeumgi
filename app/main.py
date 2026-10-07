@@ -19,7 +19,7 @@ from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from app import config, export, live, system
+from app import config, export, live, slides, system, terms, voicememos
 from app.db import Database
 from app.worker import STAGE_LABELS, Worker
 
@@ -40,6 +40,21 @@ class SpeakerPatch(BaseModel):
 
 class MarkRequest(BaseModel):
     t: float
+
+
+class NoteRequest(BaseModel):
+    t: float
+    text: str
+
+
+class NotePatch(BaseModel):
+    text: str
+
+
+class VoiceMemoImport(BaseModel):
+    keys: list[str]
+    subject: str = ""
+    language: str = "auto"
 
 
 class SpeakerMerge(BaseModel):
@@ -115,6 +130,7 @@ def create_app(
     app.state.worker = worker
     app.state.log_export_dir = None   # None = 바탕화면 (테스트에서 바꿈)
     app.state.reveal_files = True
+    app.state.voicememos_root = voicememos.ROOT   # 테스트에서 바꿈
 
     def get_or_404(rec_id: str) -> dict:
         rec = db.get_recording(rec_id)
@@ -182,12 +198,22 @@ def create_app(
         reasons = busy_reasons()
         if reasons:
             raise HTTPException(409, f"{reasons[0]}. 끝난 뒤에 업데이트해 주세요.")
-        result = system.apply_update()
+        result = system.apply_update(data_dir)
         if not result["ok"]:
             raise HTTPException(500, result["message"])
         log.info("업데이트 완료, 다시 시작: %s", result["version"])
         system.restart_soon()
         return {**result, "restarting": True}
+
+    @app.get("/api/app/whatsnew")
+    def whatsnew() -> dict:
+        unseen = system.unseen_notes(data_dir)
+        return {"notes": system.load_notes(), "unseen": [n["id"] for n in unseen]}
+
+    @app.post("/api/app/whatsnew/seen")
+    def whatsnew_seen() -> dict:
+        system.mark_notes_seen(data_dir)
+        return {"ok": True}
 
     @app.post("/api/app/logs")
     def save_logs() -> dict:
@@ -256,7 +282,9 @@ def create_app(
     @app.get("/api/recordings/{rec_id}")
     def detail(rec_id: str) -> dict:
         rec = get_or_404(rec_id)
-        return {**with_label(rec), **db.get_transcript(rec_id)}
+        transcript = db.get_transcript(rec_id)
+        return {**with_label(rec), **transcript,
+                "slides": slides.info(recordings_dir / rec_id, transcript["utterances"])}
 
     @app.get("/api/recordings/{rec_id}/status")
     def status(rec_id: str) -> dict:
@@ -294,7 +322,14 @@ def create_app(
     def search(q: str = "") -> dict:
         q = q.strip()[:100]
         hits = db.search(q) if q else []
-        return {"query": q, "count": len(hits), "results": hits}
+        # 녹음에 붙여 둔 강의자료(슬라이드)에서도 찾는다
+        slide_hits = []
+        if q:
+            for rec in db.list_recordings():
+                for h in slides.search(recordings_dir / rec["id"], q):
+                    slide_hits.append({**h, "recording_id": rec["id"], "title": rec["title"],
+                                       "created_at": rec["created_at"]})
+        return {"query": q, "count": len(hits), "results": hits, "slides": slide_hits[:100]}
 
     @app.get("/api/recordings/{rec_id}/export")
     def export_file(rec_id: str, format: str = "txt", download: bool = True) -> Response:
@@ -412,6 +447,148 @@ def create_app(
         db.delete_marks(rec_id, start, end)
         return {"marks": db.list_marks(rec_id)}
 
+    # ---- 녹음 중 메모 ----
+
+    def clean_note(text: str) -> str:
+        text = text.strip()
+        if not text:
+            raise HTTPException(400, "메모가 비었어요.")
+        return text[:500]
+
+    @app.post("/api/recordings/{rec_id}/notes", status_code=201)
+    def add_note(rec_id: str, body: NoteRequest) -> dict:
+        get_or_404(rec_id)
+        if body.t < 0:
+            raise HTTPException(400, "잘못된 시간이에요.")
+        db.add_note(rec_id, round(body.t, 2), clean_note(body.text))
+        return {"notes": db.list_notes(rec_id)}
+
+    @app.patch("/api/recordings/{rec_id}/notes/{note_id}")
+    def edit_note(rec_id: str, note_id: int, body: NotePatch) -> dict:
+        if not db.update_note(rec_id, note_id, clean_note(body.text)):
+            raise HTTPException(404, "메모를 찾을 수 없어요.")
+        return {"notes": db.list_notes(rec_id)}
+
+    @app.delete("/api/recordings/{rec_id}/notes/{note_id}")
+    def delete_note(rec_id: str, note_id: int) -> dict:
+        if not db.delete_note(rec_id, note_id):
+            raise HTTPException(404, "메모를 찾을 수 없어요.")
+        return {"notes": db.list_notes(rec_id)}
+
+    # ---- 녹음에 강의자료(PDF) 붙여 두기 ----
+
+    @app.post("/api/recordings/{rec_id}/slides")
+    async def attach_slides(rec_id: str, file: UploadFile = File(...)) -> dict:
+        rec = get_or_404(rec_id)
+        if Path(file.filename or "").suffix.lower() != ".pdf":
+            raise HTTPException(400, "PDF 파일만 붙일 수 있어요. 파워포인트는 'PDF로 내보내기' 한 뒤 붙여주세요.")
+        data = await file.read(slides.MAX_BYTES + 1)
+        if len(data) > slides.MAX_BYTES:
+            raise HTTPException(400, "파일이 너무 커요 (150MB 까지).")
+        try:
+            meta = slides.save(recordings_dir / rec_id, file.filename or "강의자료.pdf", data)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        except OSError:
+            raise HTTPException(507, "저장 공간이 부족해서 강의자료를 저장하지 못했어요.")
+
+        # 강의자료의 전공 용어를 이 녹음(다시 받아쓰기 때)과 과목의 용어 힌트에 더한다
+        found = terms.extract_terms("\n".join(meta["pages"]))
+        have = {t.lower() for t in rec["hotwords"]}
+        new = [t for t in found if t.lower() not in have]
+        if new:
+            db.update_recording(rec_id, hotwords=rec["hotwords"] + new)
+            if rec["subject"]:
+                saved = next((x for x in db.list_subjects() if x["name"] == rec["subject"]), None)
+                old = saved["hotwords"] if saved else []
+                olds = {t.lower() for t in old}
+                db.save_subject(rec["subject"], old + [t for t in new if t.lower() not in olds],
+                                saved["replacements"] if saved else rec["replacements"])
+        log.info("강의자료 붙임: %s쪽, 용어 %s개 추가", len(meta["pages"]), len(new))
+        info = slides.info(recordings_dir / rec_id, db.get_transcript(rec_id)["utterances"])
+        return {"slides": info, "terms_added": new}
+
+    @app.get("/api/recordings/{rec_id}/slides.pdf")
+    def slides_file(rec_id: str) -> FileResponse:
+        get_or_404(rec_id)
+        path = recordings_dir / rec_id / slides.PDF_NAME
+        if not path.exists():
+            raise HTTPException(404, "붙여 둔 강의자료가 없어요.")
+        return FileResponse(path, media_type="application/pdf")
+
+    @app.delete("/api/recordings/{rec_id}/slides", status_code=204)
+    def detach_slides(rec_id: str) -> None:
+        get_or_404(rec_id)
+        slides.remove(recordings_dir / rec_id)
+
+    # ---- 강의자료에서 용어 뽑기 ----
+
+    @app.post("/api/terms/extract")
+    async def extract_terms(file: UploadFile = File(...)) -> dict:
+        data = await file.read(terms.MAX_BYTES + 1)
+        if len(data) > terms.MAX_BYTES:
+            raise HTTPException(400, "파일이 너무 커요 (80MB 까지).")
+        try:
+            text = terms.extract_text(file.filename or "", data)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        if len(text.strip()) < 20:
+            raise HTTPException(400, "파일에서 글자를 읽지 못했어요. 스캔한 PDF(사진)는 읽을 수 없어요.")
+        found = terms.extract_terms(text)
+        log.info("강의자료 용어 뽑기: %s글자 → %s개", len(text), len(found))
+        return {"terms": found, "chars": len(text)}
+
+    # ---- 아이폰 음성 메모 가져오기 ----
+
+    @app.get("/api/voicememos")
+    def voicememo_list() -> dict:
+        try:
+            items = voicememos.list_memos(app.state.voicememos_root)
+        except voicememos.NoPermission:
+            return {"status": "permission", "items": []}
+        if items is None:
+            return {"status": "missing", "items": []}
+        done = db.origins("voicememo:")
+        for m in items:
+            m["imported"] = f"voicememo:{m['key']}" in done
+        return {"status": "ok", "items": items}
+
+    @app.post("/api/voicememos/import", status_code=201)
+    def voicememo_import(body: VoiceMemoImport) -> list[dict]:
+        if not body.keys:
+            raise HTTPException(400, "가져올 음성 메모를 골라주세요.")
+        subject = body.subject.strip()
+        saved = next((x for x in db.list_subjects() if x["name"] == subject), None) if subject else None
+        opts = parse_options(body.language, "", "", "", subject)
+        if saved:  # 과목에 저장해 둔 용어 힌트를 그대로 쓴다
+            opts.update(hotwords=saved["hotwords"], replacements=saved["replacements"])
+        try:
+            memos = {m["key"]: m for m in voicememos.list_memos(app.state.voicememos_root, limit=100_000) or []}
+        except voicememos.NoPermission:
+            raise HTTPException(403, "음성 메모 폴더를 읽을 권한이 없어요.")
+        done = db.origins("voicememo:")
+        created = []
+        for key in body.keys:
+            m = memos.get(key)
+            if m is None or f"voicememo:{key}" in done:
+                continue
+            src = voicememos.recordings_dir(app.state.voicememos_root) / m["file"]
+            file_name = "original" + _safe_suffix(m["file"])
+            rec = db.create_recording(title=m["title"], file_name=file_name, source="voicememo",
+                                      created_at=m["date"], origin=f"voicememo:{key}", **opts)
+            dest = recordings_dir / rec["id"]
+            dest.mkdir(parents=True, exist_ok=True)
+            try:
+                shutil.copy2(src, dest / file_name)
+            except OSError:
+                db.delete_recording(rec["id"])
+                shutil.rmtree(dest, ignore_errors=True)
+                raise HTTPException(507, f"‘{m['title']}’을 복사하지 못했어요. 저장 공간을 확인해 주세요.")
+            worker.enqueue(rec["id"])
+            created.append(with_label(db.get_recording(rec["id"])))
+        log.info("음성 메모 가져오기: %s개", len(created))
+        return created
+
     # ---- 브라우저 녹음 ----
 
     @app.post("/api/live", status_code=201)
@@ -425,17 +602,19 @@ def create_app(
         return with_label(db.get_recording(rec["id"]))
 
     @app.put("/api/live/{rec_id}/chunks/{seq}", status_code=204)
-    async def live_chunk(rec_id: str, seq: int, request: Request) -> None:
+    async def live_chunk(rec_id: str, seq: int, request: Request, track: Optional[str] = None) -> None:
         rec = get_or_404(rec_id)
         if rec["status"] != "recording":
             raise HTTPException(409, "이미 끝난 녹음이에요.")
         if not 0 <= seq < 1_000_000:
             raise HTTPException(400, "잘못된 조각 번호예요.")
+        if track is not None and track not in live.PCM_TRACKS:
+            raise HTTPException(400, "잘못된 트랙이에요.")
         data = await request.body()
         if not data or len(data) > live.MAX_CHUNK_BYTES:
             raise HTTPException(400, "녹음 조각이 비었거나 너무 커요.")
         try:
-            live.save_chunk(recordings_dir / rec_id, seq, data)
+            live.save_chunk(recordings_dir / rec_id, seq, data, track)
         except OSError:
             raise HTTPException(507, "저장 공간이 부족해서 녹음을 저장하지 못했어요.")
         awake.hold(rec_id)  # 끊겼다가 다시 이어진 경우
