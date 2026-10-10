@@ -43,8 +43,10 @@ def list_memos(root: Path = ROOT, limit: int = 200) -> Optional[list[dict[str, A
     except PermissionError as e:
         raise NoPermission() from e
 
-    meta = _read_db(rec_dir / "CloudRecordings.db")
+    rows = _read_db(rec_dir / "CloudRecordings.db")
+    meta = {r["name"]: r for r in rows if r["name"]}
     items = []
+    present = set()
     for p in files:
         m = meta.get(p.name, {})
         try:
@@ -53,6 +55,7 @@ def list_memos(root: Path = ROOT, limit: int = 200) -> Optional[list[dict[str, A
             continue
         if st.st_size < 1024:  # 아직 iCloud 에서 내려오는 중이거나 빈 파일
             continue
+        present.add(p.name)
         items.append({
             "key": m.get("uid") or p.name,
             "file": p.name,
@@ -60,6 +63,20 @@ def list_memos(root: Path = ROOT, limit: int = 200) -> Optional[list[dict[str, A
             "date": m.get("date") or st.st_mtime,
             "duration": m.get("duration"),
             "size": st.st_size,
+            "available": True,
+        })
+    # 음성 메모 목록(DB)에는 있는데 파일이 아직 맥에 없는 것 (iCloud 에서 안 내려옴) → 보여주기만
+    for r in rows:
+        if r["name"] in present or not (r["uid"] or r["name"]):
+            continue
+        items.append({
+            "key": r["uid"] or r["name"],
+            "file": r["name"],
+            "title": r["title"] or "음성 메모",
+            "date": r["date"] or 0,
+            "duration": r["duration"],
+            "size": 0,
+            "available": False,
         })
     items.sort(key=lambda x: x["date"], reverse=True)
     return items[:limit]
@@ -72,10 +89,11 @@ def find(key: str, root: Path = ROOT) -> Optional[dict[str, Any]]:
     return None
 
 
-def _read_db(path: Path) -> dict[str, dict[str, Any]]:
-    """CloudRecordings.db 에서 파일 이름별 제목·날짜·길이. 형식이 바뀌었거나 없으면 빈 dict."""
+def _read_db(path: Path) -> list[dict[str, Any]]:
+    """CloudRecordings.db 의 음성 메모들 (파일 이름·제목·날짜·길이). 형식이 바뀌었거나 없으면 빈 목록.
+    아직 맥에 안 내려온 녹음은 파일 이름(ZPATH)이 비어 있을 수 있다."""
     if not path.exists():
-        return {}
+        return []
     # 음성 메모 앱이 쓰는 중일 수 있어서 복사본을 읽는다 (-wal 까지 같이)
     with tempfile.TemporaryDirectory() as tmp:
         try:
@@ -87,22 +105,21 @@ def _read_db(path: Path) -> dict[str, dict[str, Any]]:
             c.row_factory = sqlite3.Row
             cols = {r["name"] for r in c.execute("PRAGMA table_info(ZCLOUDRECORDING)")}
             if "ZPATH" not in cols:
-                return {}
+                return []
             pick = [x for x in ("ZENCRYPTEDTITLE", "ZCUSTOMLABEL", "ZDATE", "ZDURATION", "ZUNIQUEID") if x in cols]
             rows = c.execute(f"SELECT ZPATH, {', '.join(pick)} FROM ZCLOUDRECORDING").fetchall()
             c.close()
         except (sqlite3.Error, OSError):
-            return {}
-    out = {}
+            return []
+    out = []
     for r in rows:
-        if not r["ZPATH"]:
-            continue
         d = dict(r)
-        out[Path(r["ZPATH"]).name] = {
+        out.append({
+            "name": Path(d["ZPATH"]).name if d.get("ZPATH") else None,
             "title": (d.get("ZENCRYPTEDTITLE") or d.get("ZCUSTOMLABEL") or "").strip() or None,
             "date": d["ZDATE"] + APPLE_EPOCH if d.get("ZDATE") else None,
             "duration": d.get("ZDURATION"),
             "uid": d.get("ZUNIQUEID"),
-        }
+        })
     return out
 

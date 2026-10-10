@@ -94,6 +94,18 @@ CREATE TABLE IF NOT EXISTS reminders (
     created_at REAL NOT NULL
 );
 
+-- 앱 설정 (값은 JSON)
+CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+-- 가져온(또는 자동으로 가져오려다 지운) 음성 메모. 까치녹음기에서 지워도 다시 자동으로 들어오지 않게
+CREATE TABLE IF NOT EXISTS voicememo_seen (
+    key TEXT PRIMARY KEY,
+    at  REAL NOT NULL
+);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS utterances_fts USING fts5(
     text, content='utterances', content_rowid='id', tokenize='trigram'
 );
@@ -203,6 +215,26 @@ class Database:
         with self.conn() as c:
             top = c.execute("SELECT COALESCE(MAX(priority), 0) AS p FROM recordings WHERE status = 'queued'").fetchone()["p"]
             c.execute("UPDATE recordings SET priority = ? WHERE id = ?", (top + 1, rec_id))
+
+    # ---- 설정 ----
+
+    def get_setting(self, key: str, default: Any = None) -> Any:
+        with self.conn() as c:
+            row = c.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+        return json.loads(row["value"]) if row else default
+
+    def set_setting(self, key: str, value: Any) -> None:
+        with self.conn() as c:
+            c.execute("INSERT INTO settings (key, value) VALUES (?, ?)"
+                      " ON CONFLICT(key) DO UPDATE SET value = excluded.value", (key, json.dumps(value)))
+
+    def mark_voicememo_seen(self, key: str) -> None:
+        with self.conn() as c:
+            c.execute("INSERT OR IGNORE INTO voicememo_seen (key, at) VALUES (?, ?)", (key, time.time()))
+
+    def voicememo_seen(self) -> set[str]:
+        with self.conn() as c:
+            return {r["key"] for r in c.execute("SELECT key FROM voicememo_seen").fetchall()}
 
     # ---- 할 일 알림 ----
 
