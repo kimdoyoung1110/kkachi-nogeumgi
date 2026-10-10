@@ -614,3 +614,14 @@ mark { background: color-mix(in srgb, var(--warn) 28%, transparent); color: inhe
 .auto-row input { margin-top: 3px; accent-color: var(--accent); width: 16px; height: 16px; flex: none; }
 .auto-row span { display: grid; gap: 2px; font-size: 14px; }
 .auto-row small { color: var(--text-2); font-size: 12.5px; line-height: 1.5; }
+.memo-sync { display: grid; gap: 6px; padding: 8px 10px; margin: -6px 0 12px; font-size: 12.5px; color: var(--text-2); }
+.inbox-btns { display: flex; gap: 6px; }
+
+/* 와이파이로 바로 보내기 */
+.phone-link { display: block; width: 100%; margin: 0 0 12px; padding: 8px 10px; border: 1px dashed var(--border); border-radius: 10px; background: none; color: var(--text-2); font: inherit; font-size: 13px; text-align: left; cursor: pointer; }
+.phone-link:hover { border-color: var(--accent); color: var(--accent); }
+.copy-row { display: flex; align-items: center; gap: 6px; }
+.copy-code { flex: 1; min-width: 0; padding: 7px 10px; border-radius: 8px; background: var(--surface-2); font-size: 12.5px; overflow-wrap: anywhere; user-select: all; }
+.copy-code.small { font-size: 11.5px; line-height: 1.5; }
+.guide-steps-box { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; margin-top: 12px; display: grid; gap: 6px; }
+.guide-steps-box summary { cursor: pointer; font-weight: 600; font-size: 14px; }

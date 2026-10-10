@@ -22,7 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from app import audio as audio_io
-from app import config, export, live, slides, system, terms, voicememos
+from app import config, export, live, phone, slides, system, terms, voicememos
 from app.db import Database
 from app.worker import STAGE_LABELS, Worker
 
@@ -117,6 +117,10 @@ class VoiceMemoAuto(BaseModel):
     enabled: bool
 
 
+class PhoneSetting(BaseModel):
+    enabled: bool
+
+
 class SpeakerMerge(BaseModel):
     into: int
 
@@ -163,6 +167,7 @@ def create_app(
     data_dir: Optional[Path] = None,
     pipeline_factory: Optional[Callable[[], object]] = None,
 ) -> FastAPI:
+    real_app = data_dir is None   # 테스트(data_dir 지정)에서는 와이파이 창구를 실제로 열지 않는다
     data_dir = data_dir or config.DATA_DIR
     recordings_dir = data_dir / "recordings"
     recordings_dir.mkdir(parents=True, exist_ok=True)
@@ -185,7 +190,10 @@ def create_app(
         worker.start()
         awake.start()
         threading.Thread(target=voicememo_loop, name="kkachi-voicememo", daemon=True).start()
+        if real_app and db.get_setting("phone_enabled", False):
+            phone_listener.start()
         yield
+        phone_listener.stop()
         stop_watchers.set()
         awake.stop()
         worker.stop()
@@ -678,7 +686,16 @@ def create_app(
         done = db.origins("voicememo:")
         for m in items:
             m["imported"] = f"voicememo:{m['key']}" in done
+        log.info("음성 메모 목록: 맥에 있음 %s개, 아직 안 내려옴 %s개",
+                 sum(m["available"] for m in items), sum(not m["available"] for m in items))
         return {"status": "ok", "items": items}
+
+    @app.post("/api/voicememos/open")
+    def voicememo_open_app() -> dict:
+        """맥의 음성 메모 앱을 연다 (열어야 아이폰 녹음이 iCloud 에서 내려오는 경우가 있다)"""
+        if app.state.reveal_files:
+            subprocess.run(["open", "-b", "com.apple.VoiceMemos"], check=False)
+        return {"ok": True}
 
     def import_voicememo(m: dict, opts: dict) -> dict:
         """음성 메모 하나를 녹음 목록에 넣고 받아쓰기 대기열에 세운다"""
@@ -722,7 +739,7 @@ def create_app(
         sizes = vm_auto["sizes"]
         count = 0
         for m in items:
-            if m["key"] in seen or m["date"] < since - 60:
+            if not m["available"] or m["key"] in seen or m["date"] < since - 60:
                 continue
             if sizes.get(m["key"]) != m["size"]:
                 sizes[m["key"]] = m["size"]   # 다음 확인 때 크기가 그대로면 가져온다
@@ -780,7 +797,7 @@ def create_app(
         created = []
         for key in body.keys:
             m = memos.get(key)
-            if m is None or f"voicememo:{key}" in done:
+            if m is None or not m["available"] or f"voicememo:{key}" in done:
                 continue
             try:
                 created.append(import_voicememo(m, opts))
@@ -788,6 +805,49 @@ def create_app(
                 raise HTTPException(507, f"‘{m['title']}’을 복사하지 못했어요. 저장 공간을 확인해 주세요.")
         log.info("음성 메모 가져오기: %s개", len(created))
         return created
+
+    # ---- 아이폰에서 와이파이로 바로 보내기 ----
+
+    def save_from_phone(name: str, tmp: Path) -> dict:
+        file_name = "original" + _safe_suffix(name)
+        rec = db.create_recording(title=Path(name).stem or "아이폰 녹음", file_name=file_name, source="phone")
+        dest = recordings_dir / rec["id"]
+        dest.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(tmp), dest / file_name)
+        db.update_recording(rec["id"], duration=audio_io.probe_duration(dest / file_name))
+        worker.enqueue(rec["id"])
+        return db.get_recording(rec["id"])
+
+    def phone_pin() -> Optional[str]:
+        return db.get_setting("phone_pin") if db.get_setting("phone_enabled", False) else None
+
+    phone_app = phone.make_app(phone_pin, save_from_phone, data_dir / "tmp")
+    phone_listener = phone.Listener(phone_app)
+    app.state.phone_app = phone_app
+
+    def phone_status() -> dict:
+        enabled = db.get_setting("phone_enabled", False)
+        pin = db.get_setting("phone_pin")
+        return {"enabled": enabled, "running": phone_listener.running, "error": phone_listener.error,
+                "pin": pin, "urls": [f"{a}/upload?pin={pin}" for a in phone.addresses()] if enabled else []}
+
+    @app.get("/api/phone")
+    def phone_get() -> dict:
+        return phone_status()
+
+    @app.post("/api/phone")
+    def phone_set(body: PhoneSetting) -> dict:
+        if not db.get_setting("phone_pin"):
+            db.set_setting("phone_pin", phone.new_pin())
+        db.set_setting("phone_enabled", body.enabled)
+        if real_app:
+            phone_listener.start() if body.enabled else phone_listener.stop()
+        return phone_status()
+
+    @app.post("/api/phone/pin")
+    def phone_new_pin() -> dict:
+        db.set_setting("phone_pin", phone.new_pin())
+        return phone_status()
 
     # ---- 브라우저 녹음 ----
 
