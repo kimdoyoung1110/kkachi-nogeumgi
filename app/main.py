@@ -821,7 +821,7 @@ def create_app(
     def phone_pin() -> Optional[str]:
         return db.get_setting("phone_pin") if db.get_setting("phone_enabled", False) else None
 
-    phone_app = phone.make_app(phone_pin, save_from_phone, data_dir / "tmp")
+    phone_app = phone.make_app(phone_pin, save_from_phone, data_dir / "tmp", probe=audio_io.probe_duration)
     phone_listener = phone.Listener(phone_app)
     app.state.phone_app = phone_app
 

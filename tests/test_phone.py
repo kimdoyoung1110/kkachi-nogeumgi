@@ -30,6 +30,13 @@ def test_phone_upload(make_client):
         assert sorted(x["title"] for x in recs) == ["마케팅", "새로운 녹음 2"]
         assert all(x["status"] == "done" and x["source"] == "phone" for x in recs)
 
+        # 녹음 없이 실행해서 빈 양식만 온 경우, 소리가 아닌 파일 → 목록에 넣지 않고 거절
+        r = phone.post(f"/upload?pin={pin}", data={"file": ""})
+        assert r.status_code == 400 and "녹음 파일이 오지 않았어요" in r.text
+        r = phone.post(f"/upload?pin={pin}", files={"file": ("메모.txt", b"hello" * 400, "text/plain")})
+        assert r.status_code == 400 and "소리 파일이 아니에요" in r.text
+        assert len(client.get("/api/recordings").json()) == 2
+
         # 본체 API 는 창구로 못 쓴다
         assert phone.get(f"/api/recordings?pin={pin}").status_code == 404
 

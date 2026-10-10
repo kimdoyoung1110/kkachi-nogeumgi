@@ -57,9 +57,16 @@ def addresses(port: int = PORT) -> list[str]:
     return out
 
 
-def make_app(get_pin: Callable[[], Optional[str]], save: Callable[[str, Path], dict], tmp_dir: Path) -> FastAPI:
-    """save(파일 이름, 받은 파일 경로) → 만든 녹음. get_pin() 이 None 이면 꺼진 것."""
+def make_app(get_pin: Callable[[], Optional[str]], save: Callable[[str, Path], dict], tmp_dir: Path,
+             probe: Optional[Callable[[Path], Optional[float]]] = None) -> FastAPI:
+    """save(파일 이름, 받은 파일 경로) → 만든 녹음. get_pin() 이 None 이면 꺼진 것.
+    probe(파일) 이 None 이면 소리 파일이 아니라고 보고 받지 않는다."""
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+
+    @app.exception_handler(HTTPException)
+    async def plain_error(request: Request, exc: HTTPException) -> PlainTextResponse:
+        # 아이폰 단축어가 응답을 알림으로 그대로 보여주므로 JSON 대신 글자만
+        return PlainTextResponse(f"⚠️ {exc.detail}", status_code=exc.status_code)
     fails: dict[str, tuple[int, float]] = {}
     lock = threading.Lock()
 
@@ -110,8 +117,12 @@ def make_app(get_pin: Callable[[], Optional[str]], save: Callable[[str, Path], d
                         if size > MAX_BYTES:
                             raise HTTPException(413, "파일이 너무 커요.")
                         out.write(chunk)
-            if size == 0:
-                raise HTTPException(400, "빈 파일이에요.")
+            if size < 1024:
+                # 공유로 받은 녹음 없이 실행했거나, 단축어 양식의 file 항목이 '파일'이 아니라 글자로 들어간 경우
+                raise HTTPException(400, "녹음 파일이 오지 않았어요. 음성 메모에서 공유 › 까치녹음기로 보내기로 보내주세요. "
+                                         "(단축어 양식의 file 항목은 '파일' 종류여야 해요)")
+            if probe and probe(tmp) is None:
+                raise HTTPException(400, "소리 파일이 아니에요. 음성 메모의 녹음을 보내주세요.")
             rec = save(name or "아이폰 녹음.m4a", tmp)
         finally:
             tmp.unlink(missing_ok=True)
