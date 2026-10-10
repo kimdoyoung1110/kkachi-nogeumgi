@@ -9,6 +9,7 @@ import logging
 import re
 import shutil
 import subprocess
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Callable, Optional
@@ -19,7 +20,8 @@ from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from app import config, export, live, slides, system, terms, voicememos
+from app import audio as audio_io
+from app import config, export, inbox, live, slides, system, terms, voicememos
 from app.db import Database
 from app.worker import STAGE_LABELS, Worker
 
@@ -55,6 +57,59 @@ class VoiceMemoImport(BaseModel):
     keys: list[str]
     subject: str = ""
     language: str = "auto"
+
+
+class ReminderCreate(BaseModel):
+    title: str
+    date: str          # YYYY-MM-DD
+    link: str = ""
+
+
+class ReminderPatch(BaseModel):
+    done: Optional[bool] = None
+    muted: Optional[bool] = None
+    title: Optional[str] = None
+    date: Optional[str] = None
+    link: Optional[str] = None
+
+
+# 업데이트와 함께 미리 넣어 두는 알림 (한 번만 생기고, 지워도 다시 생기지 않음)
+PRESET_REMINDERS = [
+    {"id": "2026-ku-convergence", "title": "고려대 융합전공 신청", "date": "2026-10-14",
+     "link": "https://portal.korea.ac.kr"},
+]
+
+
+def queue_eta(recs: list[dict], order: list[str], model_loaded: bool) -> dict[str, dict]:
+    """대기열 순서와 남은 시간(초). 지난 받아쓰기 속도(처리 시간 ÷ 녹음 길이)로 어림한다."""
+    speeds = sorted(r["processing_secs"] / r["duration"] for r in recs
+                    if r["status"] == "done" and r["processing_secs"] and (r["duration"] or 0) >= 60)[-20:]
+    speed = speeds[len(speeds) // 2] if speeds else 0.12   # 처음엔 '실시간의 약 8배'로
+    overhead = 15.0
+    by_id = {r["id"]: r for r in recs}
+    out: dict[str, dict] = {}
+    t: Optional[float] = 0.0 if model_loaded else 20.0   # 모델을 다시 올리는 시간
+    for r in recs:
+        if r["status"] == "processing":
+            if r["duration"]:
+                left = (speed * r["duration"] + overhead) * (1 - (r["progress"] or 0))
+                out[r["id"]] = {"eta_end": round(left)}
+                t = left
+            else:
+                t = None
+    for pos, rid in enumerate(order, 1):
+        r = by_id.get(rid)
+        if r is None:
+            continue
+        info: dict = {"queue_pos": pos}
+        if t is not None and r["duration"]:
+            info["eta_start"] = round(t)
+            t += speed * r["duration"] + overhead
+            info["eta_end"] = round(t)
+        else:
+            t = None
+        out[rid] = info
+    return out
 
 
 class SpeakerMerge(BaseModel):
@@ -102,7 +157,11 @@ def _safe_suffix(filename: str) -> str:
 def create_app(
     data_dir: Optional[Path] = None,
     pipeline_factory: Optional[Callable[[], object]] = None,
+    inbox_dir: Optional[Path] = None,
 ) -> FastAPI:
+    # 아이폰에서 보낸 파일 폴더는 실제 앱에서만 지켜본다 (테스트는 inbox_dir 를 직접 줌)
+    if inbox_dir is None and data_dir is None:
+        inbox_dir = inbox.ICLOUD_DRIVE / inbox.FOLDER_NAME
     data_dir = data_dir or config.DATA_DIR
     recordings_dir = data_dir / "recordings"
     recordings_dir.mkdir(parents=True, exist_ok=True)
@@ -114,14 +173,40 @@ def create_app(
             return Pipeline()
 
     db = Database(data_dir / "kkachi.db")
+    db.seed_reminders(PRESET_REMINDERS)
     worker = Worker(db, recordings_dir, pipeline_factory)
     awake = live.AwakeKeeper(recordings_dir)
+
+    def import_from_inbox(path: Path) -> None:
+        st = path.stat()
+        origin = f"icloud:{path.name}:{st.st_size}"
+        if origin in db.origins("icloud:"):
+            return
+        file_name = "original" + _safe_suffix(path.name)
+        rec = db.create_recording(title=path.stem, file_name=file_name, source="iphone",
+                                  created_at=st.st_mtime, origin=origin)
+        dest = recordings_dir / rec["id"]
+        dest.mkdir(parents=True, exist_ok=True)
+        try:
+            shutil.copy2(path, dest / file_name)
+        except OSError:
+            db.delete_recording(rec["id"])
+            shutil.rmtree(dest, ignore_errors=True)
+            raise
+        db.update_recording(rec["id"], duration=audio_io.probe_duration(dest / file_name))
+        worker.enqueue(rec["id"])
+
+    box = inbox.Inbox(inbox_dir, import_from_inbox) if inbox_dir else None
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         worker.start()
         awake.start()
+        if box:
+            box.start()
         yield
+        if box:
+            box.stop()
         awake.stop()
         worker.stop()
 
@@ -131,6 +216,7 @@ def create_app(
     app.state.log_export_dir = None   # None = 바탕화면 (테스트에서 바꿈)
     app.state.reveal_files = True
     app.state.voicememos_root = voicememos.ROOT   # 테스트에서 바꿈
+    app.state.inbox = box
 
     def get_or_404(rec_id: str) -> dict:
         rec = db.get_recording(rec_id)
@@ -227,7 +313,17 @@ def create_app(
 
     @app.get("/api/recordings")
     def list_recordings() -> list[dict]:
-        return [with_label(r) for r in db.list_recordings()]
+        recs = db.list_recordings()
+        eta = queue_eta(recs, db.queued_in_order(), worker.model_loaded)
+        return [{**with_label(r), **eta.get(r["id"], {})} for r in recs]
+
+    @app.post("/api/recordings/{rec_id}/prioritize")
+    def prioritize(rec_id: str) -> dict:
+        rec = get_or_404(rec_id)
+        if rec["status"] != "queued":
+            raise HTTPException(409, "대기 중인 녹음만 먼저 받아쓸 수 있어요.")
+        db.prioritize(rec_id)
+        return {"order": db.queued_in_order()}
 
     def parse_options(language: str, num_speakers: str, hotwords: str, replacements: str, subject: str) -> dict:
         if language not in ("auto", "ko", "en"):
@@ -276,6 +372,7 @@ def create_app(
             shutil.rmtree(dest_dir, ignore_errors=True)
             raise HTTPException(507, "저장 공간이 부족해서 파일을 저장하지 못했어요.")
 
+        db.update_recording(rec["id"], duration=audio_io.probe_duration(dest_dir / file_name))
         worker.enqueue(rec["id"])
         return with_label(db.get_recording(rec["id"]))
 
@@ -447,6 +544,79 @@ def create_app(
         db.delete_marks(rec_id, start, end)
         return {"marks": db.list_marks(rec_id)}
 
+    # ---- 할 일 알림 ----
+
+    def clean_date(v: str) -> str:
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", v or ""):
+            raise HTTPException(400, "날짜를 골라주세요.")
+        return v
+
+    def clean_link(v: Optional[str]) -> Optional[str]:
+        v = (v or "").strip()
+        if not v:
+            return None
+        if not re.match(r"https?://", v):
+            v = "https://" + v
+        return v[:500]
+
+    @app.get("/api/reminders")
+    def reminders() -> list[dict]:
+        return db.list_reminders()
+
+    @app.post("/api/reminders", status_code=201)
+    def add_reminder(body: ReminderCreate) -> dict:
+        title = body.title.strip()[:100]
+        if not title:
+            raise HTTPException(400, "무엇을 해야 하는지 적어주세요.")
+        return db.add_reminder(title, clean_date(body.date), clean_link(body.link))
+
+    @app.patch("/api/reminders/{rid}")
+    def edit_reminder(rid: str, body: ReminderPatch) -> dict:
+        if db.get_reminder(rid) is None:
+            raise HTTPException(404, "알림을 찾을 수 없어요.")
+        fields: dict = {}
+        if body.done is not None:
+            fields["done_at"] = time.time() if body.done else None
+        if body.muted is not None:
+            fields["muted"] = int(body.muted)
+        if body.title is not None:
+            fields["title"] = body.title.strip()[:100] or "할 일"
+        if body.date is not None:
+            fields["date"] = clean_date(body.date)
+        if body.link is not None:
+            fields["link"] = clean_link(body.link)
+        if fields:
+            db.update_reminder(rid, **fields)
+        return db.get_reminder(rid)
+
+    @app.delete("/api/reminders/{rid}", status_code=204)
+    def delete_reminder(rid: str) -> None:
+        if db.get_reminder(rid) is None:
+            raise HTTPException(404, "알림을 찾을 수 없어요.")
+        db.update_reminder(rid, deleted=1)
+
+    # ---- 아이폰에서 보낸 파일 (iCloud Drive 폴더) ----
+
+    @app.get("/api/inbox")
+    def inbox_status() -> dict:
+        if box is None:
+            return {"status": "off"}
+        return {"status": box.status, "path": str(box.root), "imported": box.imported, "last_import": box.last_import}
+
+    @app.post("/api/inbox/scan")
+    def inbox_scan() -> dict:
+        if box is None:
+            raise HTTPException(404, "이 실행에서는 꺼져 있어요.")
+        return {"imported": box.scan(), "status": box.status}
+
+    @app.post("/api/inbox/reveal")
+    def inbox_reveal() -> dict:
+        if box is None or box.status != "ok":
+            raise HTTPException(409, "iCloud Drive 의 까치녹음기 폴더를 찾을 수 없어요.")
+        if app.state.reveal_files:
+            subprocess.run(["open", str(box.root)], check=False)  # Finder 로 폴더 열기
+        return {"ok": True}
+
     # ---- 녹음 중 메모 ----
 
     def clean_note(text: str) -> str:
@@ -580,6 +750,7 @@ def create_app(
             dest.mkdir(parents=True, exist_ok=True)
             try:
                 shutil.copy2(src, dest / file_name)
+                db.update_recording(rec["id"], duration=m.get("duration") or audio_io.probe_duration(dest / file_name))
             except OSError:
                 db.delete_recording(rec["id"])
                 shutil.rmtree(dest, ignore_errors=True)
@@ -638,7 +809,8 @@ def create_app(
             file_name = live.assemble(recordings_dir / rec_id, Path(rec["file_name"]).suffix)
         except ValueError as e:
             raise HTTPException(400, str(e))
-        db.update_recording(rec_id, file_name=file_name, title=title.strip() or rec["title"], **opts)
+        db.update_recording(rec_id, file_name=file_name, title=title.strip() or rec["title"],
+                            duration=audio_io.probe_duration(recordings_dir / rec_id / file_name), **opts)
         remember_subject(opts)
         worker.enqueue(rec_id)
         return with_label(db.get_recording(rec_id))

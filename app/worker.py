@@ -83,6 +83,10 @@ class Worker:
         return self._queue.unfinished_tasks > 0
 
     @property
+    def model_loaded(self) -> bool:
+        return self._pipeline is not None
+
+    @property
     def pipeline(self):
         if self._pipeline is None:
             self._pipeline = self._pipeline_factory()
@@ -110,7 +114,8 @@ class Worker:
 
     def enqueue(self, rec_id: str) -> None:
         self.db.update_recording(
-            rec_id, status="queued", stage="queued", progress=0.0, error=None, processing_secs=None
+            rec_id, status="queued", stage="queued", progress=0.0, error=None, processing_secs=None,
+            priority=0, queued_at=time.time(),
         )
         self._queue.put(("process", rec_id))
 
@@ -150,9 +155,15 @@ class Worker:
                 self._queue.task_done()
 
     def _process(self, rec_id: str) -> None:
+        # 줄 선 순서대로가 아니라 지금 대기열 맨 앞('이것 먼저'로 당긴 것 포함)을 처리한다.
+        # 작업 표는 녹음마다 하나씩 들어오므로, 결국 대기 중인 녹음이 모두 한 번씩 처리된다.
+        order = self.db.queued_in_order()
+        if not order:
+            return  # 그 사이 삭제됐거나 이미 처리됨
+        rec_id = order[0]
         rec = self.db.get_recording(rec_id)
         if rec is None or rec["status"] != "queued":
-            return  # 그 사이 삭제됐거나 이미 처리됨
+            return
 
         started = time.time()
         self.db.update_recording(rec_id, status="processing", stage="decode", progress=0.0, error=None)

@@ -267,16 +267,20 @@ function renderUploadArea() {
   }
 
   const f = state.pendingFile;
+  const files = state.pendingFiles || [f];
+  const multi = files.length > 1;
   area.innerHTML = `
     <form class="card upload-form" id="upload-form" novalidate>
       <div class="upload-file">
-        <span class="upload-file-icon">🎵</span>
+        <span class="upload-file-icon">${multi ? "🎶" : "🎵"}</span>
         <div>
-          <div class="upload-file-name">${esc(f.name)}</div>
-          <div class="upload-file-meta">${fmtBytes(f.size)}</div>
+          <div class="upload-file-name">${multi ? `파일 ${files.length}개` : esc(f.name)}</div>
+          <div class="upload-file-meta">${fmtBytes(files.reduce((a, x) => a + x.size, 0))}</div>
         </div>
         <button type="button" class="btn-link btn" id="change-file">다른 파일</button>
       </div>
+      ${multi ? `<ul class="upload-list">${files.map((x) => `<li>${esc(x.name)}</li>`).join("")}</ul>
+        <p class="field-hint">아래 설정을 모든 파일에 똑같이 써요. 제목은 각 파일 이름으로 붙고, 하나씩 차례대로 받아써요.</p>` : ""}
       ${optionsFieldsHTML(f.name.replace(/\.[^.]+$/, ""))}
       <div class="form-actions">
         <div class="upload-bar" id="upload-bar" hidden><div></div></div>
@@ -286,8 +290,9 @@ function renderUploadArea() {
     </form>`;
 
   const form = $("#upload-form");
+  if (multi) form.title.closest(".field").hidden = true;
   $("#change-file").addEventListener("click", pickFile);
-  $("#cancel-upload").addEventListener("click", () => { state.pendingFile = null; renderUploadArea(); });
+  $("#cancel-upload").addEventListener("click", () => { state.pendingFile = state.pendingFiles = null; renderUploadArea(); });
   form.subject.addEventListener("change", () => fillSubjectTerms(form));
   if (form.subject.value) fillSubjectTerms(form);
   form.addEventListener("submit", (e) => { e.preventDefault(); submitUpload(form); });
@@ -483,6 +488,10 @@ async function chooseUploadSource() {
           <span class="source-icon">💻</span>
           <span class="source-text"><b>이 맥에 있는 파일</b><small>m4a · mp3 · wav · 영상 파일. 화면에 끌어다 놓아도 돼요</small></span>
         </button>
+        <button type="button" class="source-opt" data-src="shortcut">
+          <span class="source-icon">📲</span>
+          <span class="source-text"><b>아이폰에서 보내기</b><small>사진 앱의 영상을 공유 › 까치녹음기로 보내기. 맥이 알아서 받아써요</small></span>
+        </button>
         <button type="button" class="source-opt" data-src="iphone">
           <span class="source-icon">📱</span>
           <span class="source-text"><b>아이폰 음성 메모</b><small>아이폰에서 녹음해 iCloud 로 맥에 넘어온 음성 메모</small></span>
@@ -498,11 +507,267 @@ async function chooseUploadSource() {
     };
   });
   if (pick === "iphone") voiceMemoDialog();
+  if (pick === "shortcut") shortcutGuide();
 }
+
+/* ---------- 아이폰에서 보내기 (단축어 → iCloud Drive › 까치녹음기 폴더) ---------- */
+
+async function shortcutGuide() {
+  let st = { status: "off" };
+  try { st = await api("/api/inbox"); } catch {}
+  const statusHTML = {
+    ok: `<div class="inbox-ok"><span>✅ <b>iCloud Drive › 까치녹음기</b> 폴더를 지켜보고 있어요. 들어온 파일은 알아서 받아써요.</span>
+      <span class="inbox-btns"><button type="button" class="btn btn-sm btn-ghost" data-act="reveal">폴더 열기</button>
+      <button type="button" class="btn btn-sm btn-ghost" data-act="scan">지금 확인</button></span></div>`,
+    "no-icloud": `<div class="source-warn">이 맥에서 <b>iCloud Drive</b>가 꺼져 있어요. 시스템 설정 › Apple 계정 › iCloud › <b>iCloud Drive</b>를 켜주세요.</div>`,
+    permission: `<div class="source-warn">iCloud Drive 폴더를 읽을 권한이 없어요. 시스템 설정 › 개인정보 보호 및 보안 › <b>파일 및 폴더</b>에서 까치녹음기의 <b>iCloud Drive</b>를 켜고, 까치녹음기를 껐다(⌘Q) 켜주세요.</div>`,
+    starting: `<div class="field-hint">폴더를 확인하는 중이에요…</div>`,
+    off: `<div class="field-hint">까치녹음기 앱에서 열었을 때만 폴더를 지켜봐요.</div>`,
+  }[st.status] || "";
+  await sheetDialog((body, close) => {
+    body.innerHTML = `
+      <h3 class="source-title">📲 아이폰에서 보내기</h3>
+      ${statusHTML}
+      <p class="guide-sub"><b>쓰는 법</b> — 사진 앱에서 강의 영상을 열고 <b>공유</b> › <b>까치녹음기로 보내기</b>. 소리만 뽑아서 보내서 1시간 영상도 금방 가요. 맥이 켜져 있고 까치녹음기가 실행 중이면 몇 분 안에 받아쓰기를 시작해요.</p>
+      <details class="guide-steps-box">
+        <summary>처음 한 번: 아이폰에 단축어 만들기 (2분)</summary>
+        <ol class="source-steps">
+          <li>아이폰 <b>단축어</b> 앱을 열고 오른쪽 위 <b>＋</b>를 눌러요.</li>
+          <li>맨 위 이름을 눌러 <b>까치녹음기로 보내기</b>로 바꿔요.</li>
+          <li>아래 검색창에서 <b>미디어 인코딩</b>을 찾아 넣고, 펼쳐서 <b>오디오만</b>을 켜요.</li>
+          <li><b>파일 저장</b>을 찾아 넣고, <b>저장할 위치 묻기</b>를 끈 뒤 폴더를 <b>iCloud Drive › 까치녹음기</b>로 골라요.</li>
+          <li>아래 <b>ⓘ</b>(세부사항)에서 <b>공유 시트에서 보기</b>를 켜요.</li>
+          <li>완료! 이제 사진 앱의 공유 목록에 <b>까치녹음기로 보내기</b>가 보여요.</li>
+        </ol>
+        <p class="field-hint">iOS 버전에 따라 이름이 조금 다를 수 있어요. 음성 메모 앱의 녹음도 같은 방법으로 보낼 수 있어요. 까치녹음기 폴더가 안 보이면 맥에서 이 창을 한 번 연 뒤 잠시 기다려 주세요.</p>
+      </details>
+      <div class="dialog-actions"><button type="button" class="btn btn-primary" data-act="close">확인</button></div>`;
+    body.onclick = async (e) => {
+      const act = e.target.closest("[data-act]")?.dataset.act;
+      if (act === "close") close(null);
+      if (act === "reveal") api("/api/inbox/reveal", { method: "POST" }).catch((err) => toast(err.message, "error"));
+      if (act === "scan") {
+        try {
+          const r = await api("/api/inbox/scan", { method: "POST" });
+          toast(r.imported ? `아이폰에서 보낸 파일 ${r.imported}개를 가져왔어요.` : "새로 들어온 파일이 없어요. 방금 보냈으면 iCloud 가 맥으로 옮기는 중일 수 있어요.");
+          refresh();
+        } catch (err) { toast(err.message, "error"); }
+      }
+    };
+  });
+}
+
+/* ---------- 할 일 알림 (예: 융합전공 신청) ---------- */
+// 그날 정한 시각(9·12·15·18·21시)마다 알림. [했어요]나 [알림 끄기]를 누르면 멈춘다.
+// 새 실행기는 맥 알림으로 예약해서 앱이 꺼져 있어도 울리고, 화면은 위쪽 띠와 당일 안내 창을 맡는다.
+
+const NATIVE_REMINDERS = IN_APP && !!window.KKACHI_NATIVE?.reminders;
+state.reminders = [];
+
+function daysUntil(date) {
+  const [y, m, d] = date.split("-").map(Number);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return Math.round((new Date(y, m - 1, d) - today) / 86_400_000);
+}
+
+function fmtDay(date) {
+  const [y, m, d] = date.split("-").map(Number);
+  const days = ["일", "월", "화", "수", "목", "금", "토"];
+  return `${m}월 ${d}일 (${days[new Date(y, m - 1, d).getDay()]})`;
+}
+
+const remindersShown = () => state.reminders.filter((r) => !r.done && daysUntil(r.date) >= 0 && daysUntil(r.date) <= 30);
+
+async function loadReminders() {
+  try { state.reminders = await api("/api/reminders"); } catch { return; }
+  renderReminderBar();
+  syncReminders();
+  checkReminderNow();
+}
+
+function renderReminderBar() {
+  const bar = $("#reminder-bar");
+  const items = remindersShown();
+  bar.hidden = !items.length;
+  bar.innerHTML = items.map((r) => {
+    const d = daysUntil(r.date);
+    return `
+      <div class="rem ${d === 0 ? "today" : ""}" data-rid="${esc(r.id)}">
+        <span class="rem-text">${d === 0 ? "🔔 <b>오늘!</b>" : `📌 <b>D-${d}</b>`} ${esc(r.title)}
+          <span class="rem-date">· ${fmtDay(r.date)}</span>${r.muted ? ` <span class="rem-muted" title="알림 꺼짐">🔕</span>` : ""}</span>
+        <span class="rem-actions">
+          ${r.link ? `<a class="btn btn-sm btn-ghost" href="${esc(r.link)}" target="_blank" rel="noopener">바로 가기</a>` : ""}
+          <button class="btn btn-sm btn-primary" data-rem="done">했어요 ✓</button>
+          <button class="icon-btn" data-rem="menu" aria-label="알림 메뉴" title="알림 메뉴">⋯</button>
+        </span>
+      </div>`;
+  }).join("");
+}
+
+async function patchReminder(id, body) {
+  try {
+    await api(`/api/reminders/${id}`, jsonOpts("PATCH", body));
+  } catch (err) { toast(err.message, "error"); }
+  await loadReminders();
+}
+
+async function reminderDone(id) {
+  await patchReminder(id, { done: true });
+  toast("잘했어요! 🎉 까치가 박수 치고 있어요. 이제 알림은 안 울려요.");
+}
+
+$("#reminder-bar").addEventListener("click", (e) => {
+  const el = e.target.closest("[data-rid]");
+  const act = e.target.closest("[data-rem]")?.dataset.rem;
+  if (!el || !act) return;
+  const r = state.reminders.find((x) => x.id === el.dataset.rid);
+  if (act === "done") return reminderDone(r.id);
+  if (act === "menu") {
+    e.stopPropagation();
+    openMenu(e.target.closest("[data-rem]"), [
+      r.muted
+        ? { label: "알림 다시 켜기", icon: "🔔", run: () => patchReminder(r.id, { muted: false }) }
+        : { label: "알림 끄기 (띠는 남겨둠)", icon: "🔕", run: async () => { await patchReminder(r.id, { muted: true }); toast("알림을 껐어요. 했으면 [했어요]를 눌러주세요."); } },
+      { label: "할 일 알림 관리", icon: "📋", run: remindersDialog },
+      "-",
+      { label: "지우기", icon: "✕", danger: true, run: () => deleteReminder(r) },
+    ]);
+  }
+});
+
+async function deleteReminder(r) {
+  if (!(await confirmDialog(`'${r.title}' 알림을 지울까요?`, "지우기"))) return;
+  try { await api(`/api/reminders/${r.id}`, { method: "DELETE" }); } catch (err) { toast(err.message, "error"); }
+  loadReminders();
+}
+
+// 맥 알림 예약: 끝냈거나 끈 알림은 빼고 보낸다 (실행기가 예전 것은 지우고 새로 건다)
+function syncReminders() {
+  if (!NATIVE_REMINDERS) return;
+  const items = state.reminders.filter((r) => !r.done && !r.muted && daysUntil(r.date) >= 0)
+    .map(({ id, title, date, hours, link }) => ({ id, title, date, hours, link: link || "" }));
+  nativeCall("reminders-sync", { items }).catch(() => {});
+}
+
+// 당일 정한 시각이 지나면 화면에 큰 안내 창 (그 시각마다 한 번). 예전 실행기면 맥 알림도 화면이 보낸다
+function checkReminderNow() {
+  renderReminderBar();
+  const now = new Date();
+  for (const r of state.reminders) {
+    if (r.done || r.muted || daysUntil(r.date) !== 0) continue;
+    const slot = [...r.hours].reverse().find((h) => now.getHours() >= h);
+    if (slot == null) continue;
+    const key = `kkachi.rem.${r.id}.${r.date}.${slot}`;
+    let seen = false;
+    try { seen = localStorage.getItem(key) === "1"; } catch {}
+    if (seen || document.querySelector("dialog[open]")) continue;   // 다른 창이 떠 있으면 다음에
+    try { localStorage.setItem(key, "1"); } catch {}
+    if (!NATIVE_REMINDERS) nativeNotify(`🔔 오늘 ${r.title}!`, "아직 안 했으면 지금 해주세요. 했으면 [했어요]를 눌러주세요.", "#/");
+    reminderPopup(r);
+    break;
+  }
+}
+
+async function reminderPopup(r) {
+  const act = await sheetDialog((body, close) => {
+    body.innerHTML = `
+      <div class="rem-pop">
+        <div class="rem-pop-icon">🔔</div>
+        <h2>오늘은 <b>${esc(r.title)}</b> 날이에요!</h2>
+        <p>아직 안 했으면 지금 해주세요.<br>했으면 <b>했어요</b>를 누르면 더 안 알려드려요.</p>
+        <div class="rem-pop-main">
+          ${r.link ? `<a class="btn btn-ghost btn-lg" href="${esc(r.link)}" target="_blank" rel="noopener">바로 가기</a>` : ""}
+          <button type="button" class="btn btn-primary btn-lg" data-act="done">했어요 ✓</button>
+        </div>
+        <div class="rem-pop-sub">
+          <button type="button" class="btn-link btn" data-act="later">나중에 (다음 알림 때 다시)</button>
+          <button type="button" class="btn-link btn" data-act="mute">오늘 알림 끄기</button>
+        </div>
+      </div>`;
+    body.onclick = (e) => {
+      const a = e.target.closest("[data-act]")?.dataset.act;
+      if (a) close(a);
+    };
+  });
+  if (act === "done") reminderDone(r.id);
+  if (act === "mute") { await patchReminder(r.id, { muted: true }); toast("오늘 알림을 껐어요."); }
+}
+
+async function remindersDialog() {
+  await loadReminders();
+  const list = state.reminders.filter((r) => daysUntil(r.date) >= -7);
+  const today = new Date(Date.now() - new Date().getTimezoneOffset() * 60_000).toISOString().slice(0, 10);
+  const saved = await sheetDialog((body, close) => {
+    body.innerHTML = `
+      <h3 class="source-title">📋 할 일 알림</h3>
+      <p class="field-hint">그날 9·12·15·18·21시에 알려줘요. [했어요]나 [알림 끄기]를 누르면 멈춰요. 전날 밤 9시에도 한 번 알려줘요.</p>
+      <div class="rem-list">${list.length ? list.map((r) => `
+        <div class="rem-row ${r.done ? "done" : ""}">
+          <span>${r.done ? "✅" : r.muted ? "🔕" : "🔔"} <b>${esc(r.title)}</b> <small>${fmtDay(r.date)}${r.done ? " · 했어요" : ""}</small></span>
+          <button type="button" class="btn btn-sm btn-ghost" data-toggle="${esc(r.id)}">${r.done ? "되돌리기" : "했어요"}</button>
+        </div>`).join("") : `<p class="field-hint">아직 알림이 없어요.</p>`}</div>
+      <div class="rem-add">
+        <input class="input" name="rem-title" maxlength="100" placeholder="할 일 (예: 마케팅원론 과제 제출)">
+        <input class="input" type="date" name="rem-date" min="${today}">
+        <input class="input" name="rem-link" placeholder="바로 가기 주소 (선택)">
+      </div>
+      <div class="dialog-actions">
+        <button type="button" class="btn btn-ghost" data-act="close">닫기</button>
+        <button type="button" class="btn btn-primary" data-act="add">알림 추가</button>
+      </div>`;
+    body.onclick = async (e) => {
+      const t = e.target.closest("[data-toggle]");
+      if (t) {
+        const r = state.reminders.find((x) => x.id === t.dataset.toggle);
+        close(null);
+        await patchReminder(r.id, { done: !r.done });
+        return remindersDialog();
+      }
+      const act = e.target.closest("[data-act]")?.dataset.act;
+      if (act === "close") close(null);
+      if (act === "add") {
+        const title = body.querySelector("[name=rem-title]").value.trim();
+        const date = body.querySelector("[name=rem-date]").value;
+        if (!title || !date) { toast("할 일과 날짜를 적어주세요.", "error"); return; }
+        close({ title, date, link: body.querySelector("[name=rem-link]").value.trim() });
+      }
+    };
+  });
+  if (!saved) return;
+  try {
+    await api("/api/reminders", jsonOpts("POST", saved));
+    toast(`알림을 추가했어요. ${fmtDay(saved.date)}에 알려드릴게요.`);
+  } catch (err) { toast(err.message, "error"); }
+  loadReminders();
+}
+
+loadReminders();
+setInterval(checkReminderNow, 60_000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) checkReminderNow(); });
 
 function pickFile() {
   $("#file-input").value = "";
   $("#file-input").click();
+}
+
+// 여러 파일을 고르거나 끌어다 놓았을 때: 소리·영상 파일만 모아 한꺼번에 올린다
+function acceptFiles(list) {
+  const all = [...(list || [])];
+  if (all.length <= 1) return acceptFile(all[0]);
+  const media = all.filter(isMediaFile);
+  if (!media.length) return acceptFile(all[0]);   // 강의자료 등은 하나씩
+  if (recorder.phase !== "idle") { toast("녹음을 먼저 끝내주세요.", "error"); return; }
+  if (media.length < all.length) toast(`소리·영상 파일 ${media.length}개만 올릴게요.`);
+  if (location.hash.startsWith("#/r/")) location.hash = "#/";
+  state.pendingFile = media[0];
+  state.pendingFiles = media.length > 1 ? media : null;
+  renderUploadArea();
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+function isMediaFile(file) {
+  return /^(audio|video)\//.test(file.type) || /\.(m4a|mp3|wav|webm|mp4|aac|ogg|flac|mov|caf|qta|m4v)$/i.test(file.name);
 }
 
 function acceptFile(file) {
@@ -513,60 +778,73 @@ function acceptFile(file) {
     else toast("강의자료는 녹음 파일을 고른 뒤 '용어 힌트'의 📄 강의자료에서 뽑기로 넣어주세요.", "error");
     return;
   }
-  const ok = /^(audio|video)\//.test(file.type) || /\.(m4a|mp3|wav|webm|mp4|aac|ogg|flac|mov|caf)$/i.test(file.name);
-  if (!ok) { toast("소리 파일이 아닌 것 같아요. m4a, mp3, wav 같은 파일을 골라주세요.", "error"); return; }
+  if (!isMediaFile(file)) { toast("소리 파일이 아닌 것 같아요. m4a, mp3, wav 같은 파일을 골라주세요.", "error"); return; }
   if (recorder.phase !== "idle") { toast("녹음을 먼저 끝내주세요.", "error"); return; }
   if (location.hash.startsWith("#/r/")) location.hash = "#/";
   state.pendingFile = file;
+  state.pendingFiles = null;
   renderUploadArea();
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
-function submitUpload(form) {
-  if (state.uploading) return;
+// 파일 하나 올리기 (XHR: fetch 는 업로드 진행률을 못 알려줘서). 만든 녹음을 돌려준다
+function uploadOne(file, form, onProgress, title) {
   const fd = new FormData();
-  fd.append("file", state.pendingFile);
+  fd.append("file", file);
   appendOptions(fd, form);
+  if (title != null) fd.set("title", title);
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/api/recordings");
+    xhr.upload.onprogress = (e) => { if (e.lengthComputable) onProgress(e.loaded / e.total); };
+    xhr.onload = () => {
+      if (xhr.status === 201) return resolve(JSON.parse(xhr.responseText));
+      let msg = "올리지 못했어요. 다시 시도해 주세요.";
+      try { msg = JSON.parse(xhr.responseText).detail || msg; } catch {}
+      reject(new Error(msg));
+    };
+    xhr.onerror = () => reject(new Error("앱과 연결이 끊겼어요. 까치녹음기가 켜져 있는지 확인해 주세요."));
+    xhr.send(fd);
+  });
+}
 
+async function submitUpload(form) {
+  if (state.uploading) return;
+  const files = state.pendingFiles || [state.pendingFile];
+  const multi = files.length > 1;
   state.uploading = true;
   const btn = $("#submit-upload");
   const bar = $("#upload-bar");
   btn.disabled = true;
-  btn.textContent = "올리는 중…";
   bar.hidden = false;
 
-  // fetch 는 업로드 진행률을 못 알려줘서 XHR 사용 (큰 파일은 몇 초 걸림)
-  const xhr = new XMLHttpRequest();
-  xhr.open("POST", "/api/recordings");
-  xhr.upload.onprogress = (e) => { if (e.lengthComputable) bar.firstElementChild.style.width = `${(e.loaded / e.total) * 100}%`; };
-  xhr.onload = () => {
-    state.uploading = false;
-    if (xhr.status === 201) {
-      if (form._slides) {
-        try { attachSlides(JSON.parse(xhr.responseText).id, form._slides); } catch {}
-      }
-      state.pendingFile = null;
-      renderUploadArea();
-      toast("올렸어요. 받아쓰기가 끝나면 목록에서 열 수 있어요.");
-      refresh();
-      loadSubjects();
-    } else {
-      let msg = "올리지 못했어요. 다시 시도해 주세요.";
-      try { msg = JSON.parse(xhr.responseText).detail || msg; } catch {}
-      toast(msg, "error");
-      btn.disabled = false;
-      btn.textContent = "받아쓰기 시작";
-      bar.hidden = true;
+  const total = files.reduce((a, f) => a + f.size, 0) || 1;
+  let sent = 0, done = 0;
+  try {
+    for (const [i, file] of files.entries()) {
+      btn.textContent = multi ? `올리는 중 (${i + 1}/${files.length})…` : "올리는 중…";
+      const rec = await uploadOne(file, form, (p) => {
+        bar.firstElementChild.style.width = `${((sent + p * file.size) / total) * 100}%`;
+      }, multi ? file.name.replace(/\.[^.]+$/, "") : null);
+      sent += file.size;
+      done++;
+      if (form._slides && !multi) attachSlides(rec.id, form._slides);
     }
-  };
-  xhr.onerror = () => {
+  } catch (err) {
     state.uploading = false;
-    toast("앱과 연결이 끊겼어요. 까치녹음기가 켜져 있는지 확인해 주세요.", "error");
+    toast(done ? `${done}개는 올렸고, ${files[done].name}에서 멈췄어요: ${err.message}` : err.message, "error");
+    if (done) { state.pendingFiles = files.slice(done); state.pendingFile = files[done]; renderUploadArea(); refresh(); return; }
     btn.disabled = false;
     btn.textContent = "받아쓰기 시작";
     bar.hidden = true;
-  };
-  xhr.send(fd);
+    return;
+  }
+  state.uploading = false;
+  state.pendingFile = state.pendingFiles = null;
+  renderUploadArea();
+  toast(multi ? `${files.length}개를 올렸어요. 하나씩 차례대로 받아써요.` : "올렸어요. 받아쓰기가 끝나면 목록에서 열 수 있어요.");
+  refresh();
+  loadSubjects();
 }
 
 function statusChip(r) {
@@ -581,6 +859,20 @@ function statusChip(r) {
   return `<span class="chip chip-working"><span class="dot"></span>처리 중</span>`;
 }
 
+// 남은 시간: 초 → "약 12분", "약 1시간 5분"
+function fmtEta(sec) {
+  if (sec < 60) return "1분 안에";
+  const m = Math.round(sec / 60);
+  return m < 60 ? `약 ${m}분` : `약 ${Math.floor(m / 60)}시간${m % 60 ? ` ${m % 60}분` : ""}`;
+}
+
+function queueInfo(r) {
+  if (r.status === "processing") return r.eta_end != null ? `${fmtEta(r.eta_end)} 남음` : "";
+  if (r.status !== "queued" || !r.queue_pos) return "";
+  const when = r.eta_start == null ? "" : r.eta_start < 60 ? " · 곧 시작" : ` · ${fmtEta(r.eta_start)} 뒤 시작`;
+  return `${r.queue_pos}번째${when}`;
+}
+
 function recItemHTML(r) {
   const meta = [
     fmtDate(r.created_at),
@@ -592,7 +884,12 @@ function recItemHTML(r) {
   const pct = Math.round((r.progress || 0) * 100);
   const progress = isWorking(r) ? `
     <div class="rec-progress">
-      <div class="rec-progress-top"><span><img class="inline-emoji" src="emoji/magpie.webp" alt=""> <span class="stage">${esc(r.stage_label)}${r.status === "processing" ? "…" : ""}</span></span><span class="pct">${r.status === "processing" ? pct + "%" : ""}</span></div>
+      <div class="rec-progress-top">
+        <span><img class="inline-emoji" src="emoji/magpie.webp" alt=""> <span class="stage">${esc(r.stage_label)}${r.status === "processing" ? "…" : ""}</span>
+          ${queueInfo(r) ? `<span class="eta">${queueInfo(r)}</span>` : ""}</span>
+        <span class="pct">${r.status === "processing" ? pct + "%" : ""}${r.status === "queued" && r.queue_pos > 1
+          ? `<button class="btn btn-sm btn-ghost" data-action="prioritize" title="대기열 맨 앞으로">이것 먼저</button>` : ""}</span>
+      </div>
       <div class="bar ${r.status === "queued" ? "indeterminate" : ""}"><div style="width:${pct}%"></div></div>
     </div>` : "";
   const interrupted = r.status === "recording" && r.stalled && r.id !== recorder.id ? `
@@ -963,6 +1260,9 @@ $("#view").addEventListener("click", async (e) => {
     catch (err) { toast(err.message, "error"); }
   } else if (action === "finish-interrupted") {
     finishInterrupted(id);
+  } else if (action === "prioritize") {
+    try { await api(`/api/recordings/${id}/prioritize`, { method: "POST" }); toast("다음 차례로 당겼어요."); refresh(); }
+    catch (err) { toast(err.message, "error"); }
   } else if (action === "retry") {
     try { await api(`/api/recordings/${id}/retry`, { method: "POST" }); refresh(); }
     catch (err) { toast(err.message, "error"); }
@@ -2831,6 +3131,8 @@ async function settingsMenu(anchor) {
     ? `버전 ${v.release ? `${v.release} (${v.commit})` : v.commit} · ${new Date(v.date).toLocaleDateString("ko-KR", { month: "long", day: "numeric" })}`
     : "버전 정보 없음";
   openMenu(anchor, [
+    { label: "할 일 알림", icon: "📋", run: remindersDialog },
+    { label: "아이폰에서 보내기", icon: "📲", run: shortcutGuide },
     { label: "업데이트 확인", icon: "↻", run: checkUpdate },
     { label: "새로 바뀐 점", icon: "✨", run: showAllNotes },
     { label: "사용법 보기", icon: "?", run: () => showGuide(0) },
@@ -3023,7 +3325,7 @@ $("#btn-record").addEventListener("click", async () => {
   }
   else if (location.hash.startsWith("#/r/")) location.hash = "#/";
 });
-$("#file-input").addEventListener("change", (e) => acceptFile(e.target.files[0]));
+$("#file-input").addEventListener("change", (e) => acceptFiles(e.target.files));
 
 let dragDepth = 0;
 window.addEventListener("dragenter", (e) => {
@@ -3038,7 +3340,7 @@ window.addEventListener("drop", (e) => {
   e.preventDefault();
   dragDepth = 0;
   $("#drop-overlay").hidden = true;
-  acceptFile(e.dataTransfer.files[0]);
+  acceptFiles(e.dataTransfer.files);
 });
 
 loadSubjects();

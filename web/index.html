@@ -24,13 +24,15 @@
     </nav>
   </header>
 
+  <div class="reminder-bar" id="reminder-bar" hidden></div>
+
   <div class="banner" id="offline-banner" hidden>
     앱과 연결이 끊겼어요. Dock의 <b>까치녹음기</b>를 눌러 다시 켜주세요. 켜지면 저절로 이어져요.
   </div>
 
   <main id="view" class="container" aria-live="polite"></main>
 
-  <input type="file" id="file-input" accept="audio/*,video/*,.m4a,.mp3,.wav,.webm,.mp4,.aac,.ogg,.flac" hidden>
+  <input type="file" id="file-input" accept="audio/*,video/*,.m4a,.mp3,.wav,.webm,.mp4,.aac,.ogg,.flac" multiple hidden>
 
   <div class="drop-overlay" id="drop-overlay" hidden>
     <div class="drop-overlay-inner">여기에 놓으면 올라가요</div>

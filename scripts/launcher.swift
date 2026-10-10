@@ -128,7 +128,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         config.userContentController.add(self, name: "kkachi") // 화면 → 앱: 알림 보내기
         // 화면 → 앱: 답을 받아야 하는 요청 (앱 소리 녹음, 크롬으로 열기)
         config.userContentController.addScriptMessageHandler(self, contentWorld: .page, name: "kkachiCall")
-        let native = "window.KKACHI_NATIVE = { capture: true, mic: \(AudioCapture.micSupported) };"
+        let native = "window.KKACHI_NATIVE = { capture: true, mic: \(AudioCapture.micSupported), reminders: true };"
         config.userContentController.addUserScript(
             WKUserScript(source: native, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         web = WKWebView(frame: .zero, configuration: config)
@@ -461,6 +461,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         case "capture-status":
             replyHandler(capture?.status ?? NSNull(), nil)
 
+        case "reminders-sync":
+            // 할 일 알림을 맥 알림으로 예약한다 → 까치녹음기를 꺼둬도 정한 시각에 알림이 온다
+            scheduleReminders(body["items"] as? [[String: Any]] ?? [])
+            replyHandler(["ok": true], nil)
+
         case "open-settings":
             // 시스템 설정의 개인정보 보호 화면 (정해 둔 것만)
             let panes = ["files": "Privacy_AllFiles", "screen": "Privacy_ScreenCapture", "mic": "Privacy_Microphone"]
@@ -487,6 +492,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 
         default:
             replyHandler(nil, "모르는 요청")
+        }
+    }
+
+    /// items: [{id, title, date: "YYYY-MM-DD", hours: [9, 12, ...], link}] — 끝냈거나 끈 알림은 화면이 빼고 보낸다
+    func scheduleReminders(_ items: [[String: Any]]) {
+        let center = UNUserNotificationCenter.current()
+        center.getPendingNotificationRequests { pending in
+            let old = pending.map(\.identifier).filter { $0.hasPrefix("reminder-") }
+            center.removePendingNotificationRequests(withIdentifiers: old)
+            let now = Date()
+            let cal = Calendar.current
+            for item in items {
+                guard let id = item["id"] as? String, let title = item["title"] as? String,
+                      let date = item["date"] as? String else { continue }
+                let parts = date.split(separator: "-").compactMap { Int($0) }
+                guard parts.count == 3 else { continue }
+                let hours = item["hours"] as? [Int] ?? [9, 12, 15, 18, 21]
+                // 전날 밤 9시에 한 번 + 당일 정한 시각마다
+                var slots: [(DateComponents, String, String)] = []
+                if let day = cal.date(from: DateComponents(year: parts[0], month: parts[1], day: parts[2])),
+                   let eve = cal.date(byAdding: .day, value: -1, to: day) {
+                    var c = cal.dateComponents([.year, .month, .day], from: eve)
+                    c.hour = 21
+                    slots.append((c, "📌 내일은 \(title) 날이에요", "내일 잊지 않게 까치가 계속 알려드릴게요."))
+                }
+                for h in hours {
+                    let c = DateComponents(year: parts[0], month: parts[1], day: parts[2], hour: h)
+                    slots.append((c, "🔔 오늘 \(title)!",
+                                  "아직 안 했으면 지금 해주세요. 했으면 까치녹음기에서 [했어요]를 눌러주세요."))
+                }
+                for (i, (comps, head, body)) in slots.enumerated() {
+                    guard let when = cal.date(from: comps), when > now else { continue }
+                    let content = UNMutableNotificationContent()
+                    content.title = head
+                    content.body = body
+                    content.sound = .default
+                    content.userInfo = ["hash": "#/"]
+                    let trigger = UNCalendarNotificationTrigger(dateMatching: comps, repeats: false)
+                    center.add(UNNotificationRequest(identifier: "reminder-\(id)-\(i)", content: content, trigger: trigger))
+                }
+            }
         }
     }
 

@@ -1,4 +1,5 @@
 import threading
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -607,3 +608,82 @@ def test_voicememo_no_permission(make_client, monkeypatch):
     with client:
         assert client.get("/api/voicememos").json()["status"] == "permission"
         assert client.post("/api/voicememos/import", json={"keys": ["x"]}).status_code == 403
+
+
+def test_reminders(make_client):
+    client, _ = make_client(FakePipeline())
+    with client:
+        items = client.get("/api/reminders").json()
+        preset = next(r for r in items if r["id"] == "2026-ku-convergence")
+        assert preset["date"] == "2026-10-14" and preset["hours"] == [9, 12, 15, 18, 21]
+        assert not preset["done"] and not preset["muted"] and preset["link"].startswith("https://")
+
+        r = client.post("/api/reminders", json={"title": " 과제 마감 ", "date": "2026-11-01", "link": "blackboard.korea.ac.kr"})
+        assert r.status_code == 201 and r.json()["title"] == "과제 마감" and r.json()["link"] == "https://blackboard.korea.ac.kr"
+        assert client.post("/api/reminders", json={"title": "x", "date": "내일"}).status_code == 400
+        assert client.post("/api/reminders", json={"title": " ", "date": "2026-11-01"}).status_code == 400
+
+        assert client.patch("/api/reminders/2026-ku-convergence", json={"muted": True}).json()["muted"] is True
+        done = client.patch("/api/reminders/2026-ku-convergence", json={"done": True}).json()
+        assert done["done"] and done["done_at"]
+        assert client.patch("/api/reminders/2026-ku-convergence", json={"done": False}).json()["done"] is False
+
+        assert client.delete("/api/reminders/2026-ku-convergence").status_code == 204
+        assert all(r["id"] != "2026-ku-convergence" for r in client.get("/api/reminders").json())
+        assert client.patch("/api/reminders/2026-ku-convergence", json={"done": True}).status_code == 404
+
+
+def test_reminder_preset_not_recreated_after_delete(make_client):
+    client, _ = make_client(FakePipeline())
+    with client:
+        client.delete("/api/reminders/2026-ku-convergence")
+    client2, _ = make_client(FakePipeline())   # 앱을 다시 켜도
+    with client2:
+        assert all(r["id"] != "2026-ku-convergence" for r in client2.get("/api/reminders").json())
+
+
+class SlowPipeline(FakePipeline):
+    """처리 순서를 기록하고, 첫 작업은 신호를 받을 때까지 붙잡아 둔다."""
+    def __init__(self):
+        super().__init__()
+        import threading
+        self.gate = threading.Event()
+        self.order = []
+
+    def process(self, audio, **kw):
+        if not self.order:
+            self.gate.wait(10)
+        self.order.append(len(audio))
+        return super().process(audio, **kw)
+
+
+def test_queue_order_prioritize_and_eta(make_client, tmp_path):
+    import shutil, subprocess, imageio_ffmpeg
+    # 길이가 다른 파일 3개 → 처리 순서를 길이로 알아본다
+    files = []
+    for sec in (1, 2, 3):
+        out = tmp_path / f"t{sec}.wav"
+        subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), "-loglevel", "error", "-y", "-f", "lavfi",
+                        "-i", f"sine=frequency=440:duration={sec}", "-ar", "16000", str(out)], check=True)
+        files.append(out)
+    pipe = SlowPipeline()
+    client, app = make_client(pipe)
+    with client:
+        ids = []
+        for f in files:
+            with open(f, "rb") as fh:
+                ids.append(client.post("/api/recordings", files={"file": (f.name, fh, "audio/wav")}).json()["id"])
+        time.sleep(0.3)  # 첫 번째가 처리 시작
+        recs = {r["id"]: r for r in client.get("/api/recordings").json()}
+        assert recs[ids[0]]["status"] == "processing" and "eta_end" in recs[ids[0]]
+        assert recs[ids[1]]["queue_pos"] == 1 and recs[ids[2]]["queue_pos"] == 2
+        assert recs[ids[1]]["eta_start"] < recs[ids[2]]["eta_start"]
+        assert 1.9 < recs[ids[2]]["duration"] < 3.1   # 올릴 때 길이를 미리 읽어 둠
+
+        # 세 번째를 먼저
+        assert client.post(f"/api/recordings/{ids[2]}/prioritize").json()["order"] == [ids[2], ids[1]]
+        assert client.post(f"/api/recordings/{ids[0]}/prioritize").status_code == 409
+        pipe.gate.set()
+        app.state.worker.wait_idle()
+        n = 16000
+        assert pipe.order == [1 * n, 3 * n, 2 * n]

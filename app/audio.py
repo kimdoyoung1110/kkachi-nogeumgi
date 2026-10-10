@@ -36,3 +36,19 @@ def decode(path: str | Path, sr: int = SAMPLE_RATE) -> np.ndarray:
 
 def duration(audio: np.ndarray, sr: int = SAMPLE_RATE) -> float:
     return len(audio) / sr
+
+
+def probe_duration(path: str | Path) -> float | None:
+    """디코딩하지 않고 파일 머리말에서 길이(초)만 읽는다. 대기열 남은 시간 계산용. 모르면 None."""
+    import re
+
+    try:
+        proc = subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), "-nostdin", "-hide_banner", "-i", str(path)],
+                              capture_output=True, timeout=20)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    m = re.search(rb"Duration: (\d+):(\d+):(\d+(?:\.\d+)?)", proc.stderr)
+    if not m:
+        return None
+    h, mi, s = m.groups()
+    return int(h) * 3600 + int(mi) * 60 + float(s)
