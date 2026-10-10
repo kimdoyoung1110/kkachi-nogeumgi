@@ -399,18 +399,21 @@ document.addEventListener("click", (e) => {
 
 /* ---------- 아이폰에서 와이파이로 바로 보내기 (iCloud 없이) ---------- */
 
-async function phoneDialog() {
+// 아이폰 음성 메모 → 맥: 와이파이로 바로 보내기가 기본, iCloud 로 넘어온 음성 메모 가져오기는 보조
+async function phoneDialog(showGuide = false) {
   let st;
   try { st = await api("/api/phone"); } catch (err) { toast(err.message, "error"); return; }
   const url = st.urls?.[0] || "";
-  const ask = `공유 시트에서 받은 오디오나 미디어를 ${url} 로 POST 방식, 양식 본문의 file 항목에 담아 보내고, 받은 응답을 알림으로 보여줘. 공유 시트에서 보이게 해줘.`;
+  const ask = `공유 시트에서 미디어와 파일을 받아서, ${url} 로 POST 방식으로 보내줘. 요청 본문은 파일로 하고 단축어 입력을 그대로 넣고, 헤더 X-File-Name 에 단축어 입력의 이름을 넣어줘. 받은 응답은 알림으로 보여줘. 공유 시트에서 보이게 해줘.`;
+  const ready = st.enabled && st.running;
   await sheetDialog((body, close) => {
     body.innerHTML = `
-      <h3 class="source-title">📶 와이파이로 바로 보내기</h3>
-      <p class="field-hint">iCloud 없이, 아이폰 음성 메모에서 <b>공유 › 까치녹음기로 보내기</b>를 누르면 같은 와이파이의 이 맥으로 바로 올라가요.</p>
-      <label class="auto-row">
+      <h3 class="source-title">📱 아이폰 음성 메모 보내기</h3>
+      <p class="guide-sub">아이폰 <b>음성 메모</b> 앱에서 녹음을 열고 <b>공유 › 까치녹음기로 보내기</b>를 누르면, 같은 와이파이의 이 맥으로 바로 올라가서 받아써요.</p>
+      <label class="auto-row ${ready ? "is-on" : ""}">
         <input type="checkbox" name="phone-on" ${st.enabled ? "checked" : ""}>
-        <span><b>와이파이로 받기</b><small>켜 둔 동안만 같은 와이파이의 아이폰이 PIN 이 들어간 주소로 파일을 올릴 수 있어요. 녹음 목록이나 받아쓴 글은 볼 수 없어요.</small></span>
+        <span><b>${ready ? "✅ 와이파이로 받는 중" : "와이파이로 받기"}</b>
+          <small>켜 둔 동안만 같은 와이파이의 아이폰이 PIN 이 들어간 주소로 녹음을 올릴 수 있어요. 녹음 목록이나 받아쓴 글은 볼 수 없어요.</small></span>
       </label>
       ${st.error ? `<div class="source-warn">${esc(st.error)}</div>` : ""}
       ${st.enabled ? `
@@ -420,7 +423,7 @@ async function phoneDialog() {
           ${st.urls[1] ? `<span class="field-hint">위 주소가 안 되면: <code>${esc(st.urls[1])}</code> <button type="button" class="btn-link btn" data-copy="${esc(st.urls[1])}">복사</button> (와이파이가 바뀌면 이 주소는 달라질 수 있어요)</span>` : ""}
           <span class="field-hint">PIN <b>${esc(st.pin)}</b> · <button type="button" class="btn-link btn" data-act="pin">PIN 바꾸기</button> (바꾸면 단축어 주소도 고쳐야 해요)</span>
         </div>
-        <details class="guide-steps-box" open>
+        <details class="guide-steps-box" ${showGuide ? "open" : ""}>
           <summary>처음 한 번: 아이폰에 단축어 만들기</summary>
           <p class="field-hint"><b>쉬운 방법</b> — 단축어 앱 › ＋ › 이름을 <b>까치녹음기로 보내기</b>로 바꾸고, 아래 <b>변경할 내용 설명</b> 칸에 이 문장을 붙여 넣어요.</p>
           <div class="copy-row"><code class="copy-code small">${esc(ask)}</code><button type="button" class="btn btn-sm btn-ghost" data-copy="${esc(ask)}">복사</button></div>
@@ -428,19 +431,22 @@ async function phoneDialog() {
           <ol class="source-steps">
             <li>단축어 앱 › <b>＋</b> › 이름을 <b>까치녹음기로 보내기</b>로 바꿔요.</li>
             <li><b>URL 콘텐츠 가져오기</b>를 넣고 URL 에 위 주소를 붙여 넣어요.</li>
-            <li>▸ 를 펼쳐 방법 <b>POST</b>, 요청 본문 <b>양식</b> › 새로운 필드 <b>파일</b>: 키 <code>file</code>, 값 <b>단축어 입력</b>.</li>
+            <li>▸ 를 펼쳐 방법 <b>POST</b>, 요청 본문 <b>파일</b>, 파일은 <b>단축어 입력</b>.</li>
+            <li>(선택) 헤더 <code>X-File-Name</code> = <b>단축어 입력 › 이름</b> → 녹음 제목이 그대로 붙어요.</li>
             <li><b>알림 보기</b>를 넣고 내용에 <b>URL의 콘텐츠</b>를 넣어요.</li>
-            <li>ⓘ(세부사항) › <b>공유 시트에서 보기</b>를 켜요.</li>
+            <li>ⓘ(세부사항) › <b>공유 시트에서 보기</b>를 켜고, 받을 항목에 <b>미디어</b>와 <b>파일</b>을 체크해요.</li>
           </ol>
           <p class="field-hint">와이파이가 바뀌어도 위 주소(<b>맥 이름.local</b>)는 그대로예요. 아이폰과 맥이 <b>같은 와이파이</b>에만 있으면 돼요. 학교 와이파이처럼 기기끼리 막힌 곳에서는 아이폰 <b>개인용 핫스팟</b>을 켜고 맥을 거기에 연결한 뒤 보내면 돼요.</p>
-          <p class="field-hint">쓰는 법: 음성 메모 앱 › 녹음 › <b>공유</b> › 맨 아래 <b>까치녹음기로 보내기</b>. 처음 한 번 아이폰이 '로컬 네트워크' 접근을 물으면 허용해 주세요. 맥에서 '들어오는 연결 허용'을 물으면 허용을 눌러주세요.</p>
+          <p class="field-hint">처음 한 번 아이폰이 '로컬 네트워크' 접근을 물으면 허용해 주세요. 맥에서 '들어오는 연결 허용'을 물으면 허용을 눌러주세요.</p>
         </details>` : ""}
+      <button type="button" class="phone-link" data-act="icloud">☁️ iCloud 로 맥에 넘어온 음성 메모 가져오기 · 자동으로 가져오기 ›</button>
       <div class="dialog-actions"><button type="button" class="btn btn-primary" data-act="close">확인</button></div>`;
     body.querySelector("[name=phone-on]").onchange = async (e) => {
       try {
-        await api("/api/phone", jsonOpts("POST", { enabled: e.target.checked }));
+        const on = e.target.checked;
+        await api("/api/phone", jsonOpts("POST", { enabled: on }));
         close(null);
-        setTimeout(phoneDialog, 50);
+        setTimeout(() => phoneDialog(on), 50);
       } catch (err) { toast(err.message, "error"); e.target.checked = !e.target.checked; }
     };
     body.onclick = async (e) => {
@@ -448,11 +454,12 @@ async function phoneDialog() {
       if (c) return copyText(c.dataset.copy, "복사했어요. 아이폰으로 보내서 붙여 넣어주세요.");
       const act = e.target.closest("[data-act]")?.dataset.act;
       if (act === "close") close(null);
+      if (act === "icloud") { close(null); setTimeout(voiceMemoDialog, 50); }
       if (act === "pin") {
         if (!(await confirmDialog("PIN 을 바꿀까요? 아이폰 단축어의 주소도 새로 고쳐야 해요.", "바꾸기", { primary: true }))) return;
         await api("/api/phone/pin", { method: "POST" }).catch(() => {});
         close(null);
-        setTimeout(phoneDialog, 50);
+        setTimeout(() => phoneDialog(), 50);
       }
     };
   });
@@ -463,7 +470,7 @@ async function voiceMemoDialog() {
   try { r = await api("/api/voicememos"); } catch (err) { toast(err.message, "error"); return; }
   try { auto = await api("/api/voicememos/auto"); } catch {}
   const phoneLinkHTML = `
-    <button type="button" class="phone-link" data-act="phone">📶 iCloud 를 안 쓰면? <b>와이파이로 바로 보내기</b> ›</button>`;
+    <button type="button" class="phone-link" data-act="phone">‹ 📶 <b>와이파이로 보내기</b>로 돌아가기</button>`;
   const autoHTML = `
     <label class="auto-row">
       <input type="checkbox" name="vm-auto" ${auto.enabled ? "checked" : ""}>
@@ -473,7 +480,7 @@ async function voiceMemoDialog() {
   const picked = await sheetDialog((body, close) => {
     if (r.status === "permission") {
       body.innerHTML = `
-        <h3 class="source-title">📱 아이폰 음성 메모 가져오기</h3>
+        <h3 class="source-title">☁️ iCloud 로 넘어온 음성 메모</h3>
         <p>음성 메모 폴더를 읽으려면 맥에서 한 번 허용해야 해요. 허용하면 자동으로 가져오기도 켤 수 있어요.</p>
         <ol class="source-steps">
           <li><b>시스템 설정 › 개인정보 보호 및 보안 › 전체 디스크 접근 권한</b>을 열어요.</li>
@@ -488,7 +495,7 @@ async function voiceMemoDialog() {
         </div>`;
     } else if (r.status === "missing" || !r.items.length) {
       body.innerHTML = `
-        <h3 class="source-title">📱 아이폰 음성 메모 가져오기</h3>
+        <h3 class="source-title">☁️ iCloud 로 넘어온 음성 메모</h3>
         <p>이 맥에서 음성 메모를 찾을 수 없어요.</p>
         <ol class="source-steps">
           <li>아이폰 <b>설정 › 내 이름 › iCloud</b>에서 <b>음성 메모</b>를 켜요.</li>
@@ -500,7 +507,7 @@ async function voiceMemoDialog() {
     } else {
       const items = r.items.slice(0, 60);
       body.innerHTML = `
-        <h3 class="source-title">📱 아이폰 음성 메모 가져오기</h3>
+        <h3 class="source-title">☁️ iCloud 로 넘어온 음성 메모</h3>
         ${autoHTML}
         <div class="memo-list">${items.map((m, i) => `
           <label class="memo-item ${m.imported || !m.available ? "done" : ""}">
@@ -581,7 +588,7 @@ async function chooseUploadSource() {
         </button>
         <button type="button" class="source-opt" data-src="iphone">
           <span class="source-icon">📱</span>
-          <span class="source-text"><b>아이폰 음성 메모</b><small>아이폰에서 녹음한 음성 메모를 가져와요. 새 녹음을 알아서 가져오게 할 수도 있어요</small></span>
+          <span class="source-text"><b>아이폰 음성 메모</b><small>음성 메모에서 공유 › 까치녹음기로 보내기 하면 와이파이로 바로 와요</small></span>
         </button>
       </div>
       <div class="dialog-actions"><button type="button" class="btn btn-ghost" data-src="cancel">취소</button></div>`;
@@ -593,7 +600,7 @@ async function chooseUploadSource() {
       if (src === "file") pickFile();
     };
   });
-  if (pick === "iphone") voiceMemoDialog();
+  if (pick === "iphone") phoneDialog();
 }
 
 /* ---------- 할 일 알림 (예: 융합전공 신청) ---------- */
@@ -3174,7 +3181,7 @@ async function settingsMenu(anchor) {
     { label: "업데이트 확인", icon: "↻", run: checkUpdate },
     { label: "새로 바뀐 점", icon: "✨", run: showAllNotes },
     { label: "사용법 보기", icon: "?", run: () => showGuide(0) },
-    { label: "아이폰 음성 메모 가져오기", icon: "📱", run: voiceMemoDialog },
+    { label: "아이폰 음성 메모 보내기", icon: "📱", run: () => phoneDialog() },
     ...(IN_APP ? [{ label: "크롬에서 열기", icon: "🌐", run: openInChrome }] : []),
     { label: "문제 신고용 로그 저장", icon: "🧾", run: saveLogs },
     "-",
