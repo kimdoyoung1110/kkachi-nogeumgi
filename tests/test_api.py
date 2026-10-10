@@ -1,3 +1,4 @@
+import shutil
 import threading
 import time
 
@@ -687,3 +688,59 @@ def test_queue_order_prioritize_and_eta(make_client, tmp_path):
         app.state.worker.wait_idle()
         n = 16000
         assert pipe.order == [1 * n, 3 * n, 2 * n]
+
+
+def test_voicememo_auto_import(make_client, tmp_path):
+    import sqlite3
+    pipe = FakePipeline()
+    client, app = make_client(pipe)
+    root = tmp_path / "vm"
+    app.state.voicememos_root = root
+    _fake_voicememos(root)   # 예전 음성 메모 2개 (2026년 9월쯤)
+    with client:
+        st = client.get("/api/voicememos/auto").json()
+        assert st["enabled"] is False
+        assert client.post("/api/voicememos/auto/scan").json()["imported"] == 0   # 꺼져 있으면 안 가져옴
+
+        on = client.post("/api/voicememos/auto", json={"enabled": True}).json()
+        assert on["enabled"] and on["since"] > 0
+        # 켜기 전에 녹음한 것은 가져오지 않는다
+        client.post("/api/voicememos/auto/scan")
+        assert client.post("/api/voicememos/auto/scan").json()["imported"] == 0
+
+        # 켠 뒤 아이폰에서 새로 녹음 → 맥으로 내려옴
+        rec_dir = root / "Recordings"
+        shutil.copy(WAV, rec_dir / "20261011 093000-CCCC.m4a")
+        c = sqlite3.connect(rec_dir / "CloudRecordings.db")
+        c.execute("INSERT INTO ZCLOUDRECORDING VALUES (3, '20261011 093000-CCCC.m4a', '마케팅원론', ?, 3.2, 'CCCC')",
+                  (time.time() - 978307200,))
+        c.commit()
+        c.close()
+        assert client.post("/api/voicememos/auto/scan").json()["imported"] == 0   # 처음 본 파일은 한 번 더 확인
+        r = client.post("/api/voicememos/auto/scan").json()
+        assert r["imported"] == 1 and r["status"] == "ok"
+        app.state.worker.wait_idle()
+        recs = client.get("/api/recordings").json()
+        assert [x["title"] for x in recs] == ["마케팅원론"] and recs[0]["status"] == "done"
+
+        # 까치녹음기에서 지워도 다시 들어오지 않는다
+        client.delete(f"/api/recordings/{recs[0]['id']}")
+        client.post("/api/voicememos/auto/scan")
+        assert client.post("/api/voicememos/auto/scan").json()["imported"] == 0
+        assert client.get("/api/recordings").json() == []
+
+        off = client.post("/api/voicememos/auto", json={"enabled": False}).json()
+        assert off["enabled"] is False
+
+
+def test_voicememo_auto_no_permission(make_client, monkeypatch):
+    from app import voicememos
+    client, _ = make_client(FakePipeline())
+
+    def denied(*a, **k):
+        raise voicememos.NoPermission()
+    monkeypatch.setattr(voicememos, "list_memos", denied)
+    with client:
+        client.post("/api/voicememos/auto", json={"enabled": True})
+        r = client.post("/api/voicememos/auto/scan").json()
+        assert r["imported"] == 0 and r["status"] == "permission"

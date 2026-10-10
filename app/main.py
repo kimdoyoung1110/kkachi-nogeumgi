@@ -9,6 +9,7 @@ import logging
 import re
 import shutil
 import subprocess
+import threading
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -21,7 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from app import audio as audio_io
-from app import config, export, inbox, live, slides, system, terms, voicememos
+from app import config, export, live, slides, system, terms, voicememos
 from app.db import Database
 from app.worker import STAGE_LABELS, Worker
 
@@ -112,6 +113,10 @@ def queue_eta(recs: list[dict], order: list[str], model_loaded: bool) -> dict[st
     return out
 
 
+class VoiceMemoAuto(BaseModel):
+    enabled: bool
+
+
 class SpeakerMerge(BaseModel):
     into: int
 
@@ -157,11 +162,7 @@ def _safe_suffix(filename: str) -> str:
 def create_app(
     data_dir: Optional[Path] = None,
     pipeline_factory: Optional[Callable[[], object]] = None,
-    inbox_dir: Optional[Path] = None,
 ) -> FastAPI:
-    # 아이폰에서 보낸 파일 폴더는 실제 앱에서만 지켜본다 (테스트는 inbox_dir 를 직접 줌)
-    if inbox_dir is None and data_dir is None:
-        inbox_dir = inbox.ICLOUD_DRIVE / inbox.FOLDER_NAME
     data_dir = data_dir or config.DATA_DIR
     recordings_dir = data_dir / "recordings"
     recordings_dir.mkdir(parents=True, exist_ok=True)
@@ -174,39 +175,18 @@ def create_app(
 
     db = Database(data_dir / "kkachi.db")
     db.seed_reminders(PRESET_REMINDERS)
+    stop_watchers = threading.Event()
     worker = Worker(db, recordings_dir, pipeline_factory)
     awake = live.AwakeKeeper(recordings_dir)
 
-    def import_from_inbox(path: Path) -> None:
-        st = path.stat()
-        origin = f"icloud:{path.name}:{st.st_size}"
-        if origin in db.origins("icloud:"):
-            return
-        file_name = "original" + _safe_suffix(path.name)
-        rec = db.create_recording(title=path.stem, file_name=file_name, source="iphone",
-                                  created_at=st.st_mtime, origin=origin)
-        dest = recordings_dir / rec["id"]
-        dest.mkdir(parents=True, exist_ok=True)
-        try:
-            shutil.copy2(path, dest / file_name)
-        except OSError:
-            db.delete_recording(rec["id"])
-            shutil.rmtree(dest, ignore_errors=True)
-            raise
-        db.update_recording(rec["id"], duration=audio_io.probe_duration(dest / file_name))
-        worker.enqueue(rec["id"])
-
-    box = inbox.Inbox(inbox_dir, import_from_inbox) if inbox_dir else None
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         worker.start()
         awake.start()
-        if box:
-            box.start()
+        threading.Thread(target=voicememo_loop, name="kkachi-voicememo", daemon=True).start()
         yield
-        if box:
-            box.stop()
+        stop_watchers.set()
         awake.stop()
         worker.stop()
 
@@ -216,7 +196,6 @@ def create_app(
     app.state.log_export_dir = None   # None = 바탕화면 (테스트에서 바꿈)
     app.state.reveal_files = True
     app.state.voicememos_root = voicememos.ROOT   # 테스트에서 바꿈
-    app.state.inbox = box
 
     def get_or_404(rec_id: str) -> dict:
         rec = db.get_recording(rec_id)
@@ -595,28 +574,6 @@ def create_app(
             raise HTTPException(404, "알림을 찾을 수 없어요.")
         db.update_reminder(rid, deleted=1)
 
-    # ---- 아이폰에서 보낸 파일 (iCloud Drive 폴더) ----
-
-    @app.get("/api/inbox")
-    def inbox_status() -> dict:
-        if box is None:
-            return {"status": "off"}
-        return {"status": box.status, "path": str(box.root), "imported": box.imported, "last_import": box.last_import}
-
-    @app.post("/api/inbox/scan")
-    def inbox_scan() -> dict:
-        if box is None:
-            raise HTTPException(404, "이 실행에서는 꺼져 있어요.")
-        return {"imported": box.scan(), "status": box.status}
-
-    @app.post("/api/inbox/reveal")
-    def inbox_reveal() -> dict:
-        if box is None or box.status != "ok":
-            raise HTTPException(409, "iCloud Drive 의 까치녹음기 폴더를 찾을 수 없어요.")
-        if app.state.reveal_files:
-            subprocess.run(["open", str(box.root)], check=False)  # Finder 로 폴더 열기
-        return {"ok": True}
-
     # ---- 녹음 중 메모 ----
 
     def clean_note(text: str) -> str:
@@ -723,6 +680,89 @@ def create_app(
             m["imported"] = f"voicememo:{m['key']}" in done
         return {"status": "ok", "items": items}
 
+    def import_voicememo(m: dict, opts: dict) -> dict:
+        """음성 메모 하나를 녹음 목록에 넣고 받아쓰기 대기열에 세운다"""
+        src = voicememos.recordings_dir(app.state.voicememos_root) / m["file"]
+        file_name = "original" + _safe_suffix(m["file"])
+        rec = db.create_recording(title=m["title"], file_name=file_name, source="voicememo",
+                                  created_at=m["date"], origin=f"voicememo:{m['key']}", **opts)
+        dest = recordings_dir / rec["id"]
+        dest.mkdir(parents=True, exist_ok=True)
+        try:
+            shutil.copy2(src, dest / file_name)
+            db.update_recording(rec["id"], duration=m.get("duration") or audio_io.probe_duration(dest / file_name))
+        except OSError:
+            db.delete_recording(rec["id"])
+            shutil.rmtree(dest, ignore_errors=True)
+            raise
+        db.mark_voicememo_seen(m["key"])
+        worker.enqueue(rec["id"])
+        return with_label(db.get_recording(rec["id"]))
+
+    # ---- 새 음성 메모 자동으로 가져오기 ----
+    # 켜 둔 동안 30초마다 음성 메모 폴더를 보고, 켠 뒤에 녹음된 것 중 아직 안 가져온 걸 가져온다.
+    # 파일 크기가 두 번 연속 같을 때만 가져온다 (iCloud 에서 내려오는 중이거나 맥에서 녹음 중일 수 있어서).
+
+    vm_auto = {"status": None, "imported_total": 0, "last_import": None, "sizes": {}}
+
+    def scan_voicememos() -> int:
+        if not db.get_setting("voicememo_auto", False):
+            return 0
+        since = db.get_setting("voicememo_since", 0)
+        try:
+            items = voicememos.list_memos(app.state.voicememos_root, limit=50)
+        except voicememos.NoPermission:
+            vm_auto["status"] = "permission"
+            return 0
+        if items is None:
+            vm_auto["status"] = "missing"
+            return 0
+        vm_auto["status"] = "ok"
+        seen = db.voicememo_seen() | {o.split(":", 1)[1] for o in db.origins("voicememo:")}
+        sizes = vm_auto["sizes"]
+        count = 0
+        for m in items:
+            if m["key"] in seen or m["date"] < since - 60:
+                continue
+            if sizes.get(m["key"]) != m["size"]:
+                sizes[m["key"]] = m["size"]   # 다음 확인 때 크기가 그대로면 가져온다
+                continue
+            try:
+                import_voicememo(m, parse_options("auto", "", "", "", ""))
+            except OSError:
+                log.exception("음성 메모 자동 가져오기 실패: %s", m["title"])
+                continue
+            count += 1
+            vm_auto["imported_total"] += 1
+            vm_auto["last_import"] = time.time()
+            log.info("새 음성 메모를 자동으로 가져옴: %s", m["title"])
+        return count
+
+    def voicememo_loop() -> None:
+        while not stop_watchers.wait(30):
+            try:
+                scan_voicememos()
+            except Exception:
+                log.exception("음성 메모 자동 가져오기 확인 실패")
+
+    @app.get("/api/voicememos/auto")
+    def voicememo_auto_status() -> dict:
+        return {"enabled": db.get_setting("voicememo_auto", False), "since": db.get_setting("voicememo_since"),
+                **{k: v for k, v in vm_auto.items() if k != "sizes"}}
+
+    @app.post("/api/voicememos/auto")
+    def voicememo_auto_set(body: VoiceMemoAuto) -> dict:
+        if body.enabled and not db.get_setting("voicememo_auto", False):
+            db.set_setting("voicememo_since", time.time())   # 켠 뒤에 녹음한 것부터
+        db.set_setting("voicememo_auto", body.enabled)
+        log.info("음성 메모 자동 가져오기: %s", "켬" if body.enabled else "끔")
+        return voicememo_auto_status()
+
+    @app.post("/api/voicememos/auto/scan")
+    def voicememo_auto_scan() -> dict:
+        n = scan_voicememos()
+        return {**voicememo_auto_status(), "imported": n}
+
     @app.post("/api/voicememos/import", status_code=201)
     def voicememo_import(body: VoiceMemoImport) -> list[dict]:
         if not body.keys:
@@ -742,21 +782,10 @@ def create_app(
             m = memos.get(key)
             if m is None or f"voicememo:{key}" in done:
                 continue
-            src = voicememos.recordings_dir(app.state.voicememos_root) / m["file"]
-            file_name = "original" + _safe_suffix(m["file"])
-            rec = db.create_recording(title=m["title"], file_name=file_name, source="voicememo",
-                                      created_at=m["date"], origin=f"voicememo:{key}", **opts)
-            dest = recordings_dir / rec["id"]
-            dest.mkdir(parents=True, exist_ok=True)
             try:
-                shutil.copy2(src, dest / file_name)
-                db.update_recording(rec["id"], duration=m.get("duration") or audio_io.probe_duration(dest / file_name))
+                created.append(import_voicememo(m, opts))
             except OSError:
-                db.delete_recording(rec["id"])
-                shutil.rmtree(dest, ignore_errors=True)
                 raise HTTPException(507, f"‘{m['title']}’을 복사하지 못했어요. 저장 공간을 확인해 주세요.")
-            worker.enqueue(rec["id"])
-            created.append(with_label(db.get_recording(rec["id"])))
         log.info("음성 메모 가져오기: %s개", len(created))
         return created
 

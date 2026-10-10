@@ -398,16 +398,24 @@ document.addEventListener("click", (e) => {
 /* ---------- 아이폰 음성 메모 가져오기 ---------- */
 
 async function voiceMemoDialog() {
-  let r;
+  let r, auto = { enabled: false };
   try { r = await api("/api/voicememos"); } catch (err) { toast(err.message, "error"); return; }
+  try { auto = await api("/api/voicememos/auto"); } catch {}
+  const autoHTML = `
+    <label class="auto-row">
+      <input type="checkbox" name="vm-auto" ${auto.enabled ? "checked" : ""}>
+      <span><b>새 음성 메모 자동으로 가져오기</b>
+        <small>켜두면 아이폰에서 녹음한 음성 메모가 맥으로 넘어오는 대로 알아서 받아써요. 켠 뒤에 녹음한 것만 가져와요.</small></span>
+    </label>`;
   const picked = await sheetDialog((body, close) => {
     if (r.status === "permission") {
       body.innerHTML = `
         <h3 class="source-title">📱 아이폰 음성 메모 가져오기</h3>
-        <p>음성 메모 폴더를 읽으려면 맥에서 한 번 허용해야 해요.</p>
+        <p>음성 메모 폴더를 읽으려면 맥에서 한 번 허용해야 해요. 허용하면 자동으로 가져오기도 켤 수 있어요.</p>
         <ol class="source-steps">
           <li><b>시스템 설정 › 개인정보 보호 및 보안 › 전체 디스크 접근 권한</b>을 열어요.</li>
-          <li>목록에서 <b>까치녹음기</b>를 켜요. 없으면 <b>+</b>를 눌러 응용 프로그램의 까치녹음기를 추가해요.</li>
+          <li>목록에 <b>까치녹음기</b>가 이미 있으면 골라서 <b>−</b>로 지워요. (켜져 있어도 예전 버전 권한이라 안 될 수 있어요)</li>
+          <li><b>＋</b>를 눌러 응용 프로그램의 <b>까치녹음기</b>를 추가하고 켜요.</li>
           <li>까치녹음기를 <b>⌘Q로 껐다 다시 켜요.</b></li>
         </ol>
         <div class="dialog-actions">
@@ -428,6 +436,7 @@ async function voiceMemoDialog() {
       const items = r.items.slice(0, 60);
       body.innerHTML = `
         <h3 class="source-title">📱 아이폰 음성 메모 가져오기</h3>
+        ${autoHTML}
         <div class="memo-list">${items.map((m, i) => `
           <label class="memo-item ${m.imported ? "done" : ""}">
             <input type="checkbox" data-i="${i}" ${m.imported ? "disabled" : ""}>
@@ -444,6 +453,13 @@ async function voiceMemoDialog() {
           <button type="button" class="btn btn-primary" data-act="import" disabled>가져와서 받아쓰기</button>
         </div>`;
       const go = body.querySelector("[data-act=import]");
+      body.querySelector("[name=vm-auto]").onchange = async (e) => {
+        e.stopPropagation();
+        try {
+          const st = await api("/api/voicememos/auto", jsonOpts("POST", { enabled: e.target.checked }));
+          toast(st.enabled ? "이제 새 음성 메모가 들어오면 알아서 받아써요. 🐦‍⬛" : "자동으로 가져오기를 껐어요.");
+        } catch (err) { toast(err.message, "error"); e.target.checked = !e.target.checked; }
+      };
       body.onchange = () => {
         const n = body.querySelectorAll("[data-i]:checked").length;
         go.disabled = !n;
@@ -488,13 +504,9 @@ async function chooseUploadSource() {
           <span class="source-icon">💻</span>
           <span class="source-text"><b>이 맥에 있는 파일</b><small>m4a · mp3 · wav · 영상 파일. 화면에 끌어다 놓아도 돼요</small></span>
         </button>
-        <button type="button" class="source-opt" data-src="shortcut">
-          <span class="source-icon">📲</span>
-          <span class="source-text"><b>아이폰에서 보내기</b><small>사진 앱의 영상을 공유 › 까치녹음기로 보내기. 맥이 알아서 받아써요</small></span>
-        </button>
         <button type="button" class="source-opt" data-src="iphone">
           <span class="source-icon">📱</span>
-          <span class="source-text"><b>아이폰 음성 메모</b><small>아이폰에서 녹음해 iCloud 로 맥에 넘어온 음성 메모</small></span>
+          <span class="source-text"><b>아이폰 음성 메모</b><small>아이폰에서 녹음한 음성 메모를 가져와요. 새 녹음을 알아서 가져오게 할 수도 있어요</small></span>
         </button>
       </div>
       <div class="dialog-actions"><button type="button" class="btn btn-ghost" data-src="cancel">취소</button></div>`;
@@ -507,54 +519,6 @@ async function chooseUploadSource() {
     };
   });
   if (pick === "iphone") voiceMemoDialog();
-  if (pick === "shortcut") shortcutGuide();
-}
-
-/* ---------- 아이폰에서 보내기 (단축어 → iCloud Drive › 까치녹음기 폴더) ---------- */
-
-async function shortcutGuide() {
-  let st = { status: "off" };
-  try { st = await api("/api/inbox"); } catch {}
-  const statusHTML = {
-    ok: `<div class="inbox-ok"><span>✅ <b>iCloud Drive › 까치녹음기</b> 폴더를 지켜보고 있어요. 들어온 파일은 알아서 받아써요.</span>
-      <span class="inbox-btns"><button type="button" class="btn btn-sm btn-ghost" data-act="reveal">폴더 열기</button>
-      <button type="button" class="btn btn-sm btn-ghost" data-act="scan">지금 확인</button></span></div>`,
-    "no-icloud": `<div class="source-warn">이 맥에서 <b>iCloud Drive</b>가 꺼져 있어요. 시스템 설정 › Apple 계정 › iCloud › <b>iCloud Drive</b>를 켜주세요.</div>`,
-    permission: `<div class="source-warn">iCloud Drive 폴더를 읽을 권한이 없어요. 시스템 설정 › 개인정보 보호 및 보안 › <b>파일 및 폴더</b>에서 까치녹음기의 <b>iCloud Drive</b>를 켜고, 까치녹음기를 껐다(⌘Q) 켜주세요.</div>`,
-    starting: `<div class="field-hint">폴더를 확인하는 중이에요…</div>`,
-    off: `<div class="field-hint">까치녹음기 앱에서 열었을 때만 폴더를 지켜봐요.</div>`,
-  }[st.status] || "";
-  await sheetDialog((body, close) => {
-    body.innerHTML = `
-      <h3 class="source-title">📲 아이폰에서 보내기</h3>
-      ${statusHTML}
-      <p class="guide-sub"><b>쓰는 법</b> — 사진 앱에서 강의 영상을 열고 <b>공유</b> › <b>까치녹음기로 보내기</b>. 소리만 뽑아서 보내서 1시간 영상도 금방 가요. 맥이 켜져 있고 까치녹음기가 실행 중이면 몇 분 안에 받아쓰기를 시작해요.</p>
-      <details class="guide-steps-box">
-        <summary>처음 한 번: 아이폰에 단축어 만들기 (2분)</summary>
-        <ol class="source-steps">
-          <li>아이폰 <b>단축어</b> 앱을 열고 오른쪽 위 <b>＋</b>를 눌러요.</li>
-          <li>맨 위 이름을 눌러 <b>까치녹음기로 보내기</b>로 바꿔요.</li>
-          <li>아래 검색창에서 <b>미디어 인코딩</b>을 찾아 넣고, 펼쳐서 <b>오디오만</b>을 켜요.</li>
-          <li><b>파일 저장</b>을 찾아 넣고, <b>저장할 위치 묻기</b>를 끈 뒤 폴더를 <b>iCloud Drive › 까치녹음기</b>로 골라요.</li>
-          <li>아래 <b>ⓘ</b>(세부사항)에서 <b>공유 시트에서 보기</b>를 켜요.</li>
-          <li>완료! 이제 사진 앱의 공유 목록에 <b>까치녹음기로 보내기</b>가 보여요.</li>
-        </ol>
-        <p class="field-hint">iOS 버전에 따라 이름이 조금 다를 수 있어요. 음성 메모 앱의 녹음도 같은 방법으로 보낼 수 있어요. 까치녹음기 폴더가 안 보이면 맥에서 이 창을 한 번 연 뒤 잠시 기다려 주세요.</p>
-      </details>
-      <div class="dialog-actions"><button type="button" class="btn btn-primary" data-act="close">확인</button></div>`;
-    body.onclick = async (e) => {
-      const act = e.target.closest("[data-act]")?.dataset.act;
-      if (act === "close") close(null);
-      if (act === "reveal") api("/api/inbox/reveal", { method: "POST" }).catch((err) => toast(err.message, "error"));
-      if (act === "scan") {
-        try {
-          const r = await api("/api/inbox/scan", { method: "POST" });
-          toast(r.imported ? `아이폰에서 보낸 파일 ${r.imported}개를 가져왔어요.` : "새로 들어온 파일이 없어요. 방금 보냈으면 iCloud 가 맥으로 옮기는 중일 수 있어요.");
-          refresh();
-        } catch (err) { toast(err.message, "error"); }
-      }
-    };
-  });
 }
 
 /* ---------- 할 일 알림 (예: 융합전공 신청) ---------- */
@@ -3132,7 +3096,6 @@ async function settingsMenu(anchor) {
     : "버전 정보 없음";
   openMenu(anchor, [
     { label: "할 일 알림", icon: "📋", run: remindersDialog },
-    { label: "아이폰에서 보내기", icon: "📲", run: shortcutGuide },
     { label: "업데이트 확인", icon: "↻", run: checkUpdate },
     { label: "새로 바뀐 점", icon: "✨", run: showAllNotes },
     { label: "사용법 보기", icon: "?", run: () => showGuide(0) },

@@ -608,10 +608,9 @@ mark { background: color-mix(in srgb, var(--warn) 28%, transparent); color: inhe
 .rem-add { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
 .rem-add [name=rem-link] { grid-column: 1 / -1; }
 
-/* 아이폰에서 보내기 */
-.inbox-ok { display: grid; gap: 8px; padding: 10px 12px; border-radius: 10px; background: var(--accent-soft); font-size: 13.5px; margin-bottom: 12px; }
-.inbox-btns { display: flex; gap: 6px; }
-.guide-sub { font-size: 14px; line-height: 1.7; color: var(--text-2); margin: 0 0 10px; }
-.guide-steps-box { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; }
-.guide-steps-box summary { cursor: pointer; font-weight: 600; font-size: 14px; }
-.guide-steps-box .source-steps { margin-top: 10px; }
+
+/* 음성 메모 자동으로 가져오기 */
+.auto-row { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; margin-bottom: 12px; border-radius: 10px; background: var(--accent-soft); cursor: pointer; }
+.auto-row input { margin-top: 3px; accent-color: var(--accent); width: 16px; height: 16px; flex: none; }
+.auto-row span { display: grid; gap: 2px; font-size: 14px; }
+.auto-row small { color: var(--text-2); font-size: 12.5px; line-height: 1.5; }
