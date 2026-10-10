@@ -623,32 +623,46 @@ function fmtDay(date) {
   return `${m}월 ${d}일 (${days[new Date(y, m - 1, d).getDay()]})`;
 }
 
-const remindersShown = () => state.reminders.filter((r) => !r.done && daysUntil(r.date) >= 0 && daysUntil(r.date) <= 30);
+// 기간 알림이면 마지막 날까지. 시작이 30일 넘게 남은 건 아직 안 보여준다
+const remEnd = (r) => r.end_date || r.date;
+const remActive = (r) => daysUntil(r.date) <= 0 && daysUntil(remEnd(r)) >= 0;   // 오늘이 그날(기간 안)
+const remindersShown = () => state.reminders.filter((r) => !r.done && daysUntil(remEnd(r)) >= 0 && daysUntil(r.date) <= 30);
 
-async function loadReminders() {
+function remWhen(r) {
+  return r.end_date ? `${fmtDay(r.date)} ~ ${fmtDay(r.end_date).replace(/^\d+월 /, "")}` : fmtDay(r.date);
+}
+
+// 띠·안내 창 머리말: D-4 / 오늘! / 신청 기간 · 마지막 날
+function remBadge(r) {
+  if (!remActive(r)) return `📌 <b>D-${daysUntil(r.date)}</b>`;
+  if (!r.end_date) return "🔔 <b>오늘!</b>";
+  const left = daysUntil(r.end_date);
+  return left === 0 ? "🔔 <b>오늘이 마지막 날!</b>" : `🔔 <b>지금 기간이에요 · ${left + 1}일 남음</b>`;
+}
+
+const DONE_LABEL = "다 했어요! 그만 보여줘도 돼요 ✓";
+
+async function loadReminders(entry = false) {
   try { state.reminders = await api("/api/reminders"); } catch { return; }
   renderReminderBar();
   syncReminders();
-  checkReminderNow();
+  if (!entry) checkReminderNow();   // 앱에 들어올 때는 reminderOnEntry 가 대신 띄운다
 }
 
 function renderReminderBar() {
   const bar = $("#reminder-bar");
   const items = remindersShown();
   bar.hidden = !items.length;
-  bar.innerHTML = items.map((r) => {
-    const d = daysUntil(r.date);
-    return `
-      <div class="rem ${d === 0 ? "today" : ""}" data-rid="${esc(r.id)}">
-        <span class="rem-text">${d === 0 ? "🔔 <b>오늘!</b>" : `📌 <b>D-${d}</b>`} ${esc(r.title)}
-          <span class="rem-date">· ${fmtDay(r.date)}</span>${r.muted ? ` <span class="rem-muted" title="알림 꺼짐">🔕</span>` : ""}</span>
+  bar.innerHTML = items.map((r) => `
+      <div class="rem ${remActive(r) ? "today" : ""}" data-rid="${esc(r.id)}">
+        <span class="rem-text">${remBadge(r)} ${esc(r.title)}
+          <span class="rem-date">· ${remWhen(r)}</span>${r.muted ? ` <span class="rem-muted" title="맥 알림 꺼짐">🔕</span>` : ""}</span>
         <span class="rem-actions">
           ${r.link ? `<a class="btn btn-sm btn-ghost" href="${esc(r.link)}" target="_blank" rel="noopener">바로 가기</a>` : ""}
-          <button class="btn btn-sm btn-primary" data-rem="done">했어요 ✓</button>
+          <button class="btn btn-sm btn-primary" data-rem="done">다 했어요 ✓</button>
           <button class="icon-btn" data-rem="menu" aria-label="알림 메뉴" title="알림 메뉴">⋯</button>
         </span>
-      </div>`;
-  }).join("");
+      </div>`).join("");
 }
 
 async function patchReminder(id, body) {
@@ -660,7 +674,7 @@ async function patchReminder(id, body) {
 
 async function reminderDone(id) {
   await patchReminder(id, { done: true });
-  toast("잘했어요! 🎉 까치가 박수 치고 있어요. 이제 알림은 안 울려요.");
+  toast("잘했어요! 🎉 까치가 박수 치고 있어요. 이제 안 보여드릴게요.");
 }
 
 $("#reminder-bar").addEventListener("click", (e) => {
@@ -674,7 +688,7 @@ $("#reminder-bar").addEventListener("click", (e) => {
     openMenu(e.target.closest("[data-rem]"), [
       r.muted
         ? { label: "알림 다시 켜기", icon: "🔔", run: () => patchReminder(r.id, { muted: false }) }
-        : { label: "알림 끄기 (띠는 남겨둠)", icon: "🔕", run: async () => { await patchReminder(r.id, { muted: true }); toast("알림을 껐어요. 했으면 [했어요]를 눌러주세요."); } },
+        : { label: "맥 알림만 끄기", icon: "🔕", run: async () => { await patchReminder(r.id, { muted: true }); toast("맥 알림을 껐어요. 다 했으면 [다 했어요]를 눌러주세요."); } },
       { label: "할 일 알림 관리", icon: "📋", run: remindersDialog },
       "-",
       { label: "지우기", icon: "✕", danger: true, run: () => deleteReminder(r) },
@@ -691,44 +705,88 @@ async function deleteReminder(r) {
 // 맥 알림 예약: 끝냈거나 끈 알림은 빼고 보낸다 (실행기가 예전 것은 지우고 새로 건다)
 function syncReminders() {
   if (!NATIVE_REMINDERS) return;
-  const items = state.reminders.filter((r) => !r.done && !r.muted && daysUntil(r.date) >= 0)
-    .map(({ id, title, date, hours, link }) => ({ id, title, date, hours, link: link || "" }));
+  const items = [];
+  for (const r of state.reminders) {
+    if (r.done || r.muted || daysUntil(remEnd(r)) < 0) continue;
+    for (const date of remDays(r)) {
+      items.push({ id: `${r.id}-${date}`, title: r.title, date, hours: r.hours, link: r.link || "" });
+    }
+  }
   nativeCall("reminders-sync", { items }).catch(() => {});
 }
 
+function remDays(r) {
+  const [y, m, d] = r.date.split("-").map(Number);
+  const out = [];
+  for (let i = 0; i < 31; i++) {
+    const day = new Date(y, m - 1, d + i);
+    const key = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`;
+    out.push(key);
+    if (key >= remEnd(r)) break;
+  }
+  return out;
+}
+
 // 당일 정한 시각이 지나면 화면에 큰 안내 창 (그 시각마다 한 번). 예전 실행기면 맥 알림도 화면이 보낸다
+// 지금 시각의 알림 칸 (예: 13시면 12시 칸). 그 칸에 이미 보여줬는지 기억하는 열쇠
+function remSlotKey(r) {
+  const now = new Date();
+  const slot = [...r.hours].reverse().find((h) => now.getHours() >= h);
+  if (slot == null) return null;
+  const today = new Date(now - now.getTimezoneOffset() * 60_000).toISOString().slice(0, 10);
+  return `kkachi.rem.${r.id}.${today}.${slot}`;
+}
+
+function markSlotSeen(r) {
+  const key = remSlotKey(r);
+  if (!key) return false;
+  let seen = false;
+  try { seen = localStorage.getItem(key) === "1"; localStorage.setItem(key, "1"); } catch {}
+  return seen;
+}
+
 function checkReminderNow() {
   renderReminderBar();
-  const now = new Date();
+  if (document.querySelector("dialog[open]")) return;   // 다른 창이 떠 있으면 다음에
   for (const r of state.reminders) {
-    if (r.done || r.muted || daysUntil(r.date) !== 0) continue;
-    const slot = [...r.hours].reverse().find((h) => now.getHours() >= h);
-    if (slot == null) continue;
-    const key = `kkachi.rem.${r.id}.${r.date}.${slot}`;
-    let seen = false;
-    try { seen = localStorage.getItem(key) === "1"; } catch {}
-    if (seen || document.querySelector("dialog[open]")) continue;   // 다른 창이 떠 있으면 다음에
-    try { localStorage.setItem(key, "1"); } catch {}
-    if (!NATIVE_REMINDERS) nativeNotify(`🔔 오늘 ${r.title}!`, "아직 안 했으면 지금 해주세요. 했으면 [했어요]를 눌러주세요.", "#/");
+    if (r.done || r.muted || !remActive(r) || !remSlotKey(r)) continue;
+    if (markSlotSeen(r)) continue;
+    if (!NATIVE_REMINDERS) nativeNotify(`🔔 ${r.title}!`, "아직 안 했으면 지금 해주세요. 다 했으면 까치녹음기에서 [다 했어요]를 눌러주세요.", "#/");
     reminderPopup(r);
-    break;
+    return;
   }
 }
 
+// 앱에 들어올 때마다 안내 창 (popup 이 켜진 알림). [다 했어요]를 눌러야 그만 뜬다
+let entryShownAt = 0;
+function reminderOnEntry() {
+  const r = state.reminders.find((x) => x.popup && !x.done && daysUntil(remEnd(x)) >= 0 && daysUntil(x.date) <= 30);
+  if (!r) return;
+  if (document.querySelector("dialog[open]")) { setTimeout(reminderOnEntry, 1500); return; }   // 사용법·새 소식 창 다음에
+  entryShownAt = Date.now();
+  if (remActive(r)) markSlotSeen(r);   // 같은 시각 칸의 안내 창이 또 뜨지 않게
+  reminderPopup(r);
+}
+
 async function reminderPopup(r) {
+  const active = remActive(r);
+  const lead = !active
+    ? `<b>${remWhen(r)}</b>은<br><b>${esc(r.title)}</b> ${r.end_date ? "기간" : "날"}이에요! (D-${daysUntil(r.date)})`
+    : r.end_date
+      ? `지금 <b>${esc(r.title)}</b> 기간이에요!<br>${daysUntil(r.end_date) === 0 ? "<b>오늘이 마지막 날</b>이에요." : `${remWhen(r)} · <b>${daysUntil(r.end_date) + 1}일 남았어요</b>`}`
+      : `오늘은 <b>${esc(r.title)}</b> 날이에요!`;
   const act = await sheetDialog((body, close) => {
     body.innerHTML = `
       <div class="rem-pop">
-        <div class="rem-pop-icon">🔔</div>
-        <h2>오늘은 <b>${esc(r.title)}</b> 날이에요!</h2>
-        <p>아직 안 했으면 지금 해주세요.<br>했으면 <b>했어요</b>를 누르면 더 안 알려드려요.</p>
+        <div class="rem-pop-icon">${active ? "🔔" : "📌"}</div>
+        <h2>${lead}</h2>
+        <p>${active ? "아직 안 했으면 지금 해주세요." : "잊지 않게 까치가 계속 알려드릴게요."}<br>다 했으면 아래 버튼을 눌러주세요. 그때부터 안 보여요.</p>
         <div class="rem-pop-main">
           ${r.link ? `<a class="btn btn-ghost btn-lg" href="${esc(r.link)}" target="_blank" rel="noopener">바로 가기</a>` : ""}
-          <button type="button" class="btn btn-primary btn-lg" data-act="done">했어요 ✓</button>
+          <button type="button" class="btn btn-primary btn-lg" data-act="done">${DONE_LABEL}</button>
         </div>
         <div class="rem-pop-sub">
-          <button type="button" class="btn-link btn" data-act="later">나중에 (다음 알림 때 다시)</button>
-          <button type="button" class="btn-link btn" data-act="mute">오늘 알림 끄기</button>
+          <button type="button" class="btn-link btn" data-act="later">나중에 (다음에 또 알려줘요)</button>
         </div>
       </div>`;
     body.onclick = (e) => {
@@ -737,7 +795,6 @@ async function reminderPopup(r) {
     };
   });
   if (act === "done") reminderDone(r.id);
-  if (act === "mute") { await patchReminder(r.id, { muted: true }); toast("오늘 알림을 껐어요."); }
 }
 
 async function remindersDialog() {
@@ -747,16 +804,18 @@ async function remindersDialog() {
   const saved = await sheetDialog((body, close) => {
     body.innerHTML = `
       <h3 class="source-title">📋 할 일 알림</h3>
-      <p class="field-hint">그날 9·12·15·18·21시에 알려줘요. [했어요]나 [알림 끄기]를 누르면 멈춰요. 전날 밤 9시에도 한 번 알려줘요.</p>
+      <p class="field-hint">그날(기간이면 매일) 9·12·15·18·21시에 알려줘요. 전날 밤 9시에도 한 번 알려줘요. [다 했어요]를 누르면 멈춰요.</p>
       <div class="rem-list">${list.length ? list.map((r) => `
         <div class="rem-row ${r.done ? "done" : ""}">
-          <span>${r.done ? "✅" : r.muted ? "🔕" : "🔔"} <b>${esc(r.title)}</b> <small>${fmtDay(r.date)}${r.done ? " · 했어요" : ""}</small></span>
+          <span>${r.done ? "✅" : r.muted ? "🔕" : "🔔"} <b>${esc(r.title)}</b> <small>${remWhen(r)}${r.done ? " · 다 했어요" : ""}</small></span>
           <button type="button" class="btn btn-sm btn-ghost" data-toggle="${esc(r.id)}">${r.done ? "되돌리기" : "했어요"}</button>
         </div>`).join("") : `<p class="field-hint">아직 알림이 없어요.</p>`}</div>
       <div class="rem-add">
         <input class="input" name="rem-title" maxlength="100" placeholder="할 일 (예: 마케팅원론 과제 제출)">
-        <input class="input" type="date" name="rem-date" min="${today}">
+        <input class="input" type="date" name="rem-date" min="${today}" title="날짜 (기간이면 시작하는 날)">
         <input class="input" name="rem-link" placeholder="바로 가기 주소 (선택)">
+        <label class="rem-end">끝나는 날 (기간이면) <input class="input" type="date" name="rem-end" min="${today}"></label>
+        <label class="toggle rem-pop-opt"><input type="checkbox" name="rem-popup"><span>앱 열 때마다 안내 창 띄우기</span></label>
       </div>
       <div class="dialog-actions">
         <button type="button" class="btn btn-ghost" data-act="close">닫기</button>
@@ -776,21 +835,30 @@ async function remindersDialog() {
         const title = body.querySelector("[name=rem-title]").value.trim();
         const date = body.querySelector("[name=rem-date]").value;
         if (!title || !date) { toast("할 일과 날짜를 적어주세요.", "error"); return; }
-        close({ title, date, link: body.querySelector("[name=rem-link]").value.trim() });
+        close({ title, date, link: body.querySelector("[name=rem-link]").value.trim(),
+          end_date: body.querySelector("[name=rem-end]").value, popup: body.querySelector("[name=rem-popup]").checked });
       }
     };
   });
   if (!saved) return;
   try {
     await api("/api/reminders", jsonOpts("POST", saved));
-    toast(`알림을 추가했어요. ${fmtDay(saved.date)}에 알려드릴게요.`);
+    toast(`알림을 추가했어요. ${fmtDay(saved.date)}부터 알려드릴게요.`);
   } catch (err) { toast(err.message, "error"); }
   loadReminders();
 }
 
-loadReminders();
+let hiddenAt = 0;
+loadReminders(true).then(() => setTimeout(reminderOnEntry, 800));
 setInterval(checkReminderNow, 60_000);
-document.addEventListener("visibilitychange", () => { if (!document.hidden) checkReminderNow(); });
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) { hiddenAt = Date.now(); return; }
+  if (hiddenAt && Date.now() - hiddenAt > 10 * 60_000 && Date.now() - entryShownAt > 10 * 60_000) {
+    loadReminders(true).then(reminderOnEntry);   // 한참 뒤에 다시 들어오면 또 안내
+  } else {
+    checkReminderNow();
+  }
+});
 
 function pickFile() {
   $("#file-input").value = "";

@@ -62,8 +62,10 @@ class VoiceMemoImport(BaseModel):
 
 class ReminderCreate(BaseModel):
     title: str
-    date: str          # YYYY-MM-DD
+    date: str          # YYYY-MM-DD (시작일)
+    end_date: str = ""  # 기간이면 마지막 날
     link: str = ""
+    popup: bool = False  # 앱 열 때마다 안내 창
 
 
 class ReminderPatch(BaseModel):
@@ -71,13 +73,15 @@ class ReminderPatch(BaseModel):
     muted: Optional[bool] = None
     title: Optional[str] = None
     date: Optional[str] = None
+    end_date: Optional[str] = None
     link: Optional[str] = None
+    popup: Optional[bool] = None
 
 
 # 업데이트와 함께 미리 넣어 두는 알림 (한 번만 생기고, 지워도 다시 생기지 않음)
 PRESET_REMINDERS = [
-    {"id": "2026-ku-convergence", "title": "고려대 융합전공 신청", "date": "2026-10-14",
-     "link": "https://portal.korea.ac.kr"},
+    {"id": "2026-ku-convergence", "title": "고려대 융합전공 신청", "date": "2026-10-14", "end_date": "2026-10-16",
+     "link": "https://portal.korea.ac.kr", "popup": True},
 ]
 
 
@@ -555,7 +559,11 @@ def create_app(
         title = body.title.strip()[:100]
         if not title:
             raise HTTPException(400, "무엇을 해야 하는지 적어주세요.")
-        return db.add_reminder(title, clean_date(body.date), clean_link(body.link))
+        start = clean_date(body.date)
+        end = clean_date(body.end_date) if body.end_date else None
+        if end and end < start:
+            raise HTTPException(400, "끝나는 날이 시작하는 날보다 빨라요.")
+        return db.add_reminder(title, start, clean_link(body.link), end if end != start else None, body.popup)
 
     @app.patch("/api/reminders/{rid}")
     def edit_reminder(rid: str, body: ReminderPatch) -> dict:
@@ -572,6 +580,10 @@ def create_app(
             fields["date"] = clean_date(body.date)
         if body.link is not None:
             fields["link"] = clean_link(body.link)
+        if body.end_date is not None:
+            fields["end_date"] = clean_date(body.end_date) if body.end_date else None
+        if body.popup is not None:
+            fields["popup"] = int(body.popup)
         if fields:
             db.update_reminder(rid, **fields)
         return db.get_reminder(rid)

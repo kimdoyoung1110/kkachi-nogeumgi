@@ -239,10 +239,14 @@ class Database:
     # ---- 할 일 알림 ----
 
     def seed_reminders(self, items: list[dict[str, Any]]) -> None:
+        """미리 넣어 두는 알림. 이미 있으면 내용(제목·기간·링크·안내 창)만 새 버전에 맞춘다
+        ('했어요'·'알림 끄기'·지우기는 그대로 둔다)."""
         with self.conn() as c:
             for r in items:
                 c.execute("INSERT OR IGNORE INTO reminders (id, title, date, link, created_at) VALUES (?,?,?,?,?)",
                           (r["id"], r["title"], r["date"], r.get("link"), time.time()))
+                c.execute("UPDATE reminders SET title = ?, date = ?, end_date = ?, link = ?, popup = ? WHERE id = ?",
+                          (r["title"], r["date"], r.get("end_date"), r.get("link"), int(r.get("popup", False)), r["id"]))
 
     def list_reminders(self) -> list[dict[str, Any]]:
         with self.conn() as c:
@@ -254,11 +258,12 @@ class Database:
             row = c.execute("SELECT * FROM reminders WHERE id = ? AND deleted = 0", (rid,)).fetchone()
         return _reminder(row) if row else None
 
-    def add_reminder(self, title: str, date: str, link: Optional[str]) -> dict[str, Any]:
+    def add_reminder(self, title: str, date: str, link: Optional[str], end_date: Optional[str] = None,
+                     popup: bool = False) -> dict[str, Any]:
         rid = uuid.uuid4().hex[:10]
         with self.conn() as c:
-            c.execute("INSERT INTO reminders (id, title, date, link, created_at) VALUES (?,?,?,?,?)",
-                      (rid, title, date, link, time.time()))
+            c.execute("INSERT INTO reminders (id, title, date, end_date, link, popup, created_at) VALUES (?,?,?,?,?,?,?)",
+                      (rid, title, date, end_date, link, int(popup), time.time()))
         return self.get_reminder(rid)
 
     def update_reminder(self, rid: str, **fields: Any) -> None:
@@ -474,6 +479,10 @@ def _migrate(c: sqlite3.Connection) -> None:
         c.execute("ALTER TABLE recordings ADD COLUMN finished_at REAL")
     if "origin" not in cols:
         c.execute("ALTER TABLE recordings ADD COLUMN origin TEXT")
+    cols_r = {r["name"] for r in c.execute("PRAGMA table_info(reminders)")}
+    if "end_date" not in cols_r:  # 기간 알림 (예: 14~16일 신청 기간) + 앱 열 때마다 안내 창
+        c.execute("ALTER TABLE reminders ADD COLUMN end_date TEXT")
+        c.execute("ALTER TABLE reminders ADD COLUMN popup INTEGER NOT NULL DEFAULT 0")
     if "priority" not in cols:  # 대기열 순서: priority 큰 것 먼저, 같으면 먼저 줄 선 것
         c.execute("ALTER TABLE recordings ADD COLUMN priority REAL NOT NULL DEFAULT 0")
         c.execute("ALTER TABLE recordings ADD COLUMN queued_at REAL")
@@ -484,6 +493,7 @@ def _reminder(row: sqlite3.Row) -> dict[str, Any]:
     d["hours"] = json.loads(d["hours"])
     d["done"] = d["done_at"] is not None
     d["muted"] = bool(d["muted"])
+    d["popup"] = bool(d.get("popup"))
     del d["deleted"]
     return d
 
