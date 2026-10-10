@@ -627,3 +627,7 @@ mark { background: color-mix(in srgb, var(--warn) 28%, transparent); color: inhe
 .guide-steps-box summary { cursor: pointer; font-weight: 600; font-size: 14px; }
 .auto-row.is-on { background: color-mix(in srgb, var(--accent-soft) 60%, #e7f6ec); }
 .guide-sub { font-size: 14px; line-height: 1.7; color: var(--text-2); margin: 0 0 12px; }
+.rem-end { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-2); }
+.rem-end .input { flex: 1; }
+.rem-pop-opt { grid-column: 1 / -1; }
+.rem-pop h2 b { color: var(--accent); }

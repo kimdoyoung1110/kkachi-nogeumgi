@@ -261,7 +261,7 @@ wheels = [
 
 [[package]]
 name = "kkachi-nogeumgi"
-version = "1.0.3"
+version = "1.0.4"
 source = { virtual = "." }
 dependencies = [
     { name = "fastapi" },

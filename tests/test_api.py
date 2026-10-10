@@ -744,3 +744,24 @@ def test_voicememo_auto_no_permission(make_client, monkeypatch):
         client.post("/api/voicememos/auto", json={"enabled": True})
         r = client.post("/api/voicememos/auto/scan").json()
         assert r["imported"] == 0 and r["status"] == "permission"
+
+
+def test_reminder_range_and_preset_update(make_client, tmp_path):
+    import sqlite3
+    client, _ = make_client(FakePipeline())
+    with client:
+        preset = next(r for r in client.get("/api/reminders").json() if r["id"] == "2026-ku-convergence")
+        assert preset["date"] == "2026-10-14" and preset["end_date"] == "2026-10-16" and preset["popup"] is True
+        r = client.post("/api/reminders", json={"title": "시험", "date": "2026-11-01", "end_date": "2026-11-03", "popup": True}).json()
+        assert r["end_date"] == "2026-11-03" and r["popup"]
+        assert client.post("/api/reminders", json={"title": "x", "date": "2026-11-03", "end_date": "2026-11-01"}).status_code == 400
+
+    # 1.0.2 에서 미리 넣어 둔 알림(기간·안내 창 없음)이 있던 맥: 새 버전이 켜지면 기간·안내 창이 붙는다
+    db = sqlite3.connect(tmp_path / "kkachi.db")
+    db.execute("UPDATE reminders SET end_date = NULL, popup = 0, muted = 1 WHERE id = '2026-ku-convergence'")
+    db.commit()
+    db.close()
+    client2, _ = make_client(FakePipeline())
+    with client2:
+        preset = next(r for r in client2.get("/api/reminders").json() if r["id"] == "2026-ku-convergence")
+        assert preset["end_date"] == "2026-10-16" and preset["popup"] and preset["muted"]   # 끈 건 그대로
