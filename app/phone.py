@@ -142,6 +142,7 @@ class Listener:
         self.app = app
         self.port = port
         self._server = None
+        self._thread: Optional[threading.Thread] = None
         self.error: Optional[str] = None
 
     @property
@@ -153,24 +154,37 @@ class Listener:
 
         if self._server is not None:
             return
-        # 포트가 이미 쓰이고 있으면 알려준다
+        # 방금 끈 창구가 아직 닫히는 중일 수 있어서 몇 초 동안 다시 시도한다
+        for _ in range(20):
+            if self._port_free():
+                break
+            time.sleep(0.25)
+        else:
+            self.error = (f"{self.port}번 통로를 다른 프로그램이 쓰고 있어요. 까치녹음기를 ⌘Q로 껐다 켠 뒤 "
+                          "다시 켜보세요. 그래도 안 되면 맥을 재시동해 주세요.")
+            log.warning("와이파이로 받기를 켜지 못함: %s", self.error)
+            return
+        self.error = None
+        server = uvicorn.Server(uvicorn.Config(self.app, host="0.0.0.0", port=self.port, log_level="warning",
+                                               access_log=False, lifespan="off"))
+        self._thread = threading.Thread(target=server.run, name="kkachi-phone", daemon=True)
+        self._thread.start()
+        self._server = server
+        log.info("와이파이로 받기 켬 (포트 %s)", self.port)
+
+    def _port_free(self) -> bool:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
                 s.bind(("0.0.0.0", self.port))
+                return True
             except OSError:
-                self.error = f"{self.port}번 통로를 다른 프로그램이 쓰고 있어요."
-                log.warning("와이파이로 받기를 켜지 못함: %s", self.error)
-                return
-        self.error = None
-        server = uvicorn.Server(uvicorn.Config(self.app, host="0.0.0.0", port=self.port, log_level="warning",
-                                               access_log=False, lifespan="off"))
-        threading.Thread(target=server.run, name="kkachi-phone", daemon=True).start()
-        self._server = server
-        log.info("와이파이로 받기 켬 (포트 %s)", self.port)
+                return False
 
     def stop(self) -> None:
         if self._server is not None:
             self._server.should_exit = True
-            self._server = None
+            if self._thread:
+                self._thread.join(timeout=5)   # 완전히 닫힐 때까지 (바로 다시 켤 수 있게)
+            self._server = self._thread = None
             log.info("와이파이로 받기 끔")
