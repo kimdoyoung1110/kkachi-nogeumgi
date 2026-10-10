@@ -94,7 +94,8 @@ def make_app(get_pin: Callable[[], Optional[str]], save: Callable[[str, Path], d
         check(request)
         tmp_dir.mkdir(parents=True, exist_ok=True)
         tmp = tmp_dir / f"phone-{secrets.token_hex(6)}.part"
-        name = request.query_params.get("name") or ""
+        # 이름: 주소의 ?name= 또는 단축어에서 넣은 머리글 X-File-Name (요청 본문을 '파일'로 보낼 때)
+        name = request.query_params.get("name") or request.headers.get("x-file-name") or ""
         size = 0
         try:
             ctype = request.headers.get("content-type", "")
@@ -118,6 +119,8 @@ def make_app(get_pin: Callable[[], Optional[str]], save: Callable[[str, Path], d
                             raise HTTPException(413, "파일이 너무 커요.")
                         out.write(chunk)
             if size < 1024:
+                head = tmp.read_bytes()[:80] if tmp.exists() else b""
+                log.warning("와이파이로 받기 거절: 형식=%s 크기=%s 앞부분=%r", ctype, size, head)
                 # 공유로 받은 녹음 없이 실행했거나, 단축어 양식의 file 항목이 '파일'이 아니라 글자로 들어간 경우
                 raise HTTPException(400, "녹음 파일이 오지 않았어요. 음성 메모에서 공유 › 까치녹음기로 보내기로 보내주세요. "
                                          "(단축어 양식의 file 항목은 '파일' 종류여야 해요)")
