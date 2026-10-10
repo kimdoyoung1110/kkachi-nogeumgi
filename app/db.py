@@ -81,6 +81,19 @@ CREATE TABLE IF NOT EXISTS notes (
 );
 CREATE INDEX IF NOT EXISTS notes_rec ON notes(recording_id, t);
 
+-- 꼭 해야 할 일 알림 (예: 융합전공 신청). 그날 정한 시각마다 알림, '했어요'나 '알림 끄기'를 누르면 멈춤
+CREATE TABLE IF NOT EXISTS reminders (
+    id         TEXT PRIMARY KEY,
+    title      TEXT NOT NULL,
+    date       TEXT NOT NULL,                       -- YYYY-MM-DD
+    link       TEXT,
+    hours      TEXT NOT NULL DEFAULT '[9,12,15,18,21]',
+    done_at    REAL,
+    muted      INTEGER NOT NULL DEFAULT 0,
+    deleted    INTEGER NOT NULL DEFAULT 0,          -- 지워도 기록은 남겨서 미리 넣어 둔 알림이 다시 생기지 않게
+    created_at REAL NOT NULL
+);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS utterances_fts USING fts5(
     text, content='utterances', content_rowid='id', tokenize='trigram'
 );
@@ -98,7 +111,7 @@ END;
 
 RECORDING_FIELDS = (
     "id", "title", "created_at", "source", "file_name", "duration", "language", "num_speakers",
-    "subject", "status", "stage", "progress", "error", "processing_secs", "finished_at",
+    "subject", "status", "stage", "progress", "error", "processing_secs", "finished_at", "priority", "queued_at",
 )
 
 
@@ -178,6 +191,50 @@ class Database:
     def delete_recording(self, rec_id: str) -> None:
         with self.conn() as c:
             c.execute("DELETE FROM recordings WHERE id = ?", (rec_id,))
+
+    def queued_in_order(self) -> list[str]:
+        """대기 중인 녹음을 받아쓸 순서대로"""
+        with self.conn() as c:
+            rows = c.execute("SELECT id FROM recordings WHERE status = 'queued'"
+                             " ORDER BY priority DESC, COALESCE(queued_at, created_at), created_at").fetchall()
+        return [r["id"] for r in rows]
+
+    def prioritize(self, rec_id: str) -> None:
+        with self.conn() as c:
+            top = c.execute("SELECT COALESCE(MAX(priority), 0) AS p FROM recordings WHERE status = 'queued'").fetchone()["p"]
+            c.execute("UPDATE recordings SET priority = ? WHERE id = ?", (top + 1, rec_id))
+
+    # ---- 할 일 알림 ----
+
+    def seed_reminders(self, items: list[dict[str, Any]]) -> None:
+        with self.conn() as c:
+            for r in items:
+                c.execute("INSERT OR IGNORE INTO reminders (id, title, date, link, created_at) VALUES (?,?,?,?,?)",
+                          (r["id"], r["title"], r["date"], r.get("link"), time.time()))
+
+    def list_reminders(self) -> list[dict[str, Any]]:
+        with self.conn() as c:
+            rows = c.execute("SELECT * FROM reminders WHERE deleted = 0 ORDER BY date, created_at").fetchall()
+        return [_reminder(r) for r in rows]
+
+    def get_reminder(self, rid: str) -> Optional[dict[str, Any]]:
+        with self.conn() as c:
+            row = c.execute("SELECT * FROM reminders WHERE id = ? AND deleted = 0", (rid,)).fetchone()
+        return _reminder(row) if row else None
+
+    def add_reminder(self, title: str, date: str, link: Optional[str]) -> dict[str, Any]:
+        rid = uuid.uuid4().hex[:10]
+        with self.conn() as c:
+            c.execute("INSERT INTO reminders (id, title, date, link, created_at) VALUES (?,?,?,?,?)",
+                      (rid, title, date, link, time.time()))
+        return self.get_reminder(rid)
+
+    def update_reminder(self, rid: str, **fields: Any) -> None:
+        if "hours" in fields:
+            fields["hours"] = json.dumps(fields["hours"])
+        cols = ", ".join(f"{k} = ?" for k in fields)
+        with self.conn() as c:
+            c.execute(f"UPDATE reminders SET {cols} WHERE id = ?", (*fields.values(), rid))
 
     def ids_with_status(self, *statuses: str) -> list[str]:
         q = ",".join("?" * len(statuses))
@@ -385,6 +442,18 @@ def _migrate(c: sqlite3.Connection) -> None:
         c.execute("ALTER TABLE recordings ADD COLUMN finished_at REAL")
     if "origin" not in cols:
         c.execute("ALTER TABLE recordings ADD COLUMN origin TEXT")
+    if "priority" not in cols:  # 대기열 순서: priority 큰 것 먼저, 같으면 먼저 줄 선 것
+        c.execute("ALTER TABLE recordings ADD COLUMN priority REAL NOT NULL DEFAULT 0")
+        c.execute("ALTER TABLE recordings ADD COLUMN queued_at REAL")
+
+
+def _reminder(row: sqlite3.Row) -> dict[str, Any]:
+    d = dict(row)
+    d["hours"] = json.loads(d["hours"])
+    d["done"] = d["done_at"] is not None
+    d["muted"] = bool(d["muted"])
+    del d["deleted"]
+    return d
 
 
 def _utterance(row: sqlite3.Row) -> dict[str, Any]:

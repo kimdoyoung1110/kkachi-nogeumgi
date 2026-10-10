@@ -580,3 +580,38 @@ mark { background: color-mix(in srgb, var(--warn) 28%, transparent); color: inhe
   .slide-pane { order: -1; z-index: 4; padding: 8px; }
   .slide-frame canvas { width: auto; max-width: 100%; max-height: 30vh; margin: 0 auto; }
 }
+
+/* 대기열 */
+.rec-progress-top .eta { margin-left: 8px; font-size: 12.5px; color: var(--text-3); }
+.rec-progress-top .pct .btn { margin-left: 6px; }
+.upload-list { margin: 0 0 6px; padding-left: 20px; font-size: 13.5px; color: var(--text-2); max-height: 160px; overflow-y: auto; }
+
+/* 할 일 알림: 위쪽 띠 */
+.reminder-bar { display: grid; gap: 1px; background: var(--border); border-bottom: 1px solid var(--border); }
+.rem { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; padding: 8px 20px; background: var(--warn-soft); color: var(--text); font-size: 14px; }
+.rem.today { background: var(--danger-soft); }
+.rem.today .rem-text b:first-child { color: var(--danger); }
+.rem-date { color: var(--text-2); }
+.rem-actions { display: inline-flex; align-items: center; gap: 6px; }
+.rem-pop { text-align: center; padding: 6px 4px 0; }
+.rem-pop-icon { font-size: 48px; animation: rem-ring 1.2s ease-in-out infinite; }
+@keyframes rem-ring { 0%, 100% { transform: rotate(0); } 10%, 30% { transform: rotate(-14deg); } 20%, 40% { transform: rotate(14deg); } 50% { transform: rotate(0); } }
+@media (prefers-reduced-motion: reduce) { .rem-pop-icon { animation: none; } }
+.rem-pop h2 { margin: 8px 0 8px; font-size: 21px; }
+.rem-pop p { color: var(--text-2); line-height: 1.7; margin: 0 0 16px; }
+.rem-pop-main { display: flex; justify-content: center; gap: 8px; margin-bottom: 10px; }
+.rem-pop-sub { display: flex; justify-content: center; gap: 14px; font-size: 13px; }
+.rem-list { display: grid; gap: 4px; margin: 10px 0 14px; }
+.rem-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 10px; }
+.rem-row small { color: var(--text-3); margin-left: 4px; }
+.rem-row.done b { text-decoration: line-through; color: var(--text-3); }
+.rem-add { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
+.rem-add [name=rem-link] { grid-column: 1 / -1; }
+
+/* 아이폰에서 보내기 */
+.inbox-ok { display: grid; gap: 8px; padding: 10px 12px; border-radius: 10px; background: var(--accent-soft); font-size: 13.5px; margin-bottom: 12px; }
+.inbox-btns { display: flex; gap: 6px; }
+.guide-sub { font-size: 14px; line-height: 1.7; color: var(--text-2); margin: 0 0 10px; }
+.guide-steps-box { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; }
+.guide-steps-box summary { cursor: pointer; font-weight: 600; font-size: 14px; }
+.guide-steps-box .source-steps { margin-top: 10px; }

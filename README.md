@@ -32,6 +32,7 @@ Finder 에서 `~/까치녹음기/설치.command` 를 두 번 누르면 끝 (uv �
 - 앱(Swift 실행기)이 서버를 띄우고 브라우저로 `http://127.0.0.1:8765` 를 연다. 실행 중엔 인터넷에 접속하지 않음(`HF_HUB_OFFLINE=1`).
 - 데이터: `~/Library/Application Support/KkachiNogeumgi/` (녹음, DB, 로그)
 - 실행기 수정 후: `scripts/build_launcher.sh` 로 `assets/kkachi-launcher` 를 다시 만들어 커밋
+- 업데이트와 함께 미리 넣어 둘 할 일 알림은 `app/main.py` 의 `PRESET_REMINDERS` 에 추가 (id 는 새로. 한 번만 생기고, 지워도 다시 안 생김)
 - 쓰는 사람이 알아야 할 변화가 있으면 `whatsnew.json` 맨 앞에 노트를 추가 (새 `id`). 업데이트 전 확인 창과 업데이트 후 첫 화면에 보여준다. 노트가 없으면 커밋 제목을 보여줌
 
 ## 개발 실행
