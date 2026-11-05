@@ -1,20 +1,26 @@
 """까치 영상분석기: 광고 영상을 컷으로 나누고 컷마다 화면·글자·내레이션을 모은다.
 
 videos/<id>/video.mp4     받은 영상
-videos/<id>/shots.json    {"id", "title", "source", "duration", "shots": [...], "speech": [...]}
+videos/<id>/shots.json    {"id", "title", "source", "duration", "shots": [...], "speech": [...]} 끝나면 생긴다
+videos/<id>/status.json   {"state": queued/running/failed, "step", "progress", "error"} 처리 중에만 있다
 videos/<id>/frames/       컷마다 시작·중간·끝 화면
 videos/<id>/sheets/       컷 여러 개를 한 장에 모은 이미지 (Claude 에게 보낼 때 이미지 수를 줄인다)
 
 전부 이 맥 안에서 돌아간다. 화면을 해석하는 일은 이 결과를 받은 Claude 가 한다.
+앱의 영상 탭과 Claude 앱(video_mcp)이 같은 폴더를 쓰므로 어느 쪽에서 분석해도 양쪽에서 보인다.
 """
 
 from __future__ import annotations
 
+import csv
 import hashlib
+import io
 import json
 import logging
 import re
+import shutil
 import subprocess
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -35,6 +41,8 @@ WORKERS = 4
 MAX_TEXT_LINES = 8
 
 ProgressFn = Callable[[str], None]
+STEPS = {"영상 받는 중": 0.05, "컷 나누는 중": 0.2, "컷별 화면과 글자 읽는 중": 0.3, "내레이션 받아쓰는 중": 0.65}
+ID_RE = re.compile(r"^[\w-]{1,32}$")
 
 
 def _ffmpeg(*args: str) -> subprocess.CompletedProcess:
@@ -61,8 +69,13 @@ def fetch(source: str, folder: Path) -> tuple[Path, str]:
     options = {"format": "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/b[height<=1080]/b", "merge_output_format": "mp4",
                "outtmpl": str(folder / "video.%(ext)s"), "noplaylist": True, "quiet": True, "no_warnings": True,
                "noprogress": True, "ffmpeg_location": imageio_ffmpeg.get_ffmpeg_exe()}
-    with yt_dlp.YoutubeDL(options) as ydl:
-        info = ydl.extract_info(source, download=not target.exists())
+    try:
+        with yt_dlp.YoutubeDL(options) as ydl:
+            info = ydl.extract_info(source, download=not target.exists())
+    except yt_dlp.utils.DownloadError as exc:
+        log.warning("영상 받기 실패: %s", exc)
+        raise ValueError("영상을 받지 못했어요. 주소가 맞는지, 누구나 볼 수 있는 영상인지 확인해 주세요. "
+                         "계속 안 되면 영상 파일로 올려 주세요.") from exc
     return target, info.get("title") or source
 
 
@@ -154,49 +167,132 @@ def _read_shot(path: Path, folder: Path, shot: dict[str, Any]) -> None:
         shot["text"] += [line for line in read_text(folder / name) if line not in shot["text"]]
 
 
-def analyze(source: str, pipeline: Any = None, progress: Optional[ProgressFn] = None) -> dict[str, Any]:
+def _root(root: Optional[Path]) -> Path:
+    return root or VIDEOS_DIR
+
+
+def set_status(folder: Path, state: str, step: str = "", error: Optional[str] = None, **extra: Any) -> None:
+    folder.mkdir(parents=True, exist_ok=True)
+    old = read_json(folder / "status.json") or {}
+    status = {**old, "state": state, "step": step, "progress": STEPS.get(step, 0.0), "error": error,
+              "updated_at": time.time(), **extra}
+    tmp = folder / "status.json.tmp"
+    tmp.write_text(json.dumps(status, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(folder / "status.json")
+
+
+def read_json(path: Path) -> Optional[dict[str, Any]]:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def analyze(source: str, pipeline: Any = None, progress: Optional[ProgressFn] = None, root: Optional[Path] = None,
+            vid: Optional[str] = None, title: Optional[str] = None) -> dict[str, Any]:
     """영상 하나를 분석한다. 이미 분석한 영상이면 저장해 둔 결과를 돌려준다."""
-    say = progress or (lambda _text: None)
-    vid = video_id(source)
-    folder = VIDEOS_DIR / vid
+    vid = vid or video_id(source)
+    folder = _root(root) / vid
     meta_path = folder / "shots.json"
-    if meta_path.exists():
-        return json.loads(meta_path.read_text(encoding="utf-8"))
+    done = read_json(meta_path)
+    if done:
+        return done
 
-    say("영상 받는 중")
-    path, title = fetch(source, folder)
-    duration = audio_io.probe_duration(path)
-    if not duration:
-        raise ValueError("영상 길이를 읽지 못했어요. 영상 파일이 맞는지 확인해 주세요.")
+    def say(step: str) -> None:
+        set_status(folder, "running", step, source=source)
+        if progress:
+            progress(step)
 
-    say("컷 나누는 중")
-    shots = make_shots(detect_cuts(path), duration)
+    try:
+        say("영상 받는 중")
+        path, found_title = fetch(source, folder)
+        duration = audio_io.probe_duration(path)
+        if not duration:
+            raise ValueError("영상 길이를 읽지 못했어요. 영상 파일이 맞는지 확인해 주세요.")
 
-    say("컷별 화면과 글자 읽는 중")
-    with ThreadPoolExecutor(max_workers=WORKERS) as pool:
-        list(pool.map(lambda shot: _read_shot(path, folder, shot), shots))
+        say("컷 나누는 중")
+        shots = make_shots(detect_cuts(path), duration)
 
-    speech: list[dict[str, Any]] = []
-    if pipeline is not None:
-        say("내레이션 받아쓰는 중")
-        for u in pipeline.process(audio_io.decode(path)):
-            speech.append({"start": u.start, "end": u.end, "text": u.text,
-                           "words": [{"text": w.text, "start": w.start, "end": w.end} for w in u.words]})
-    for shot in shots:
-        shot["speech"] = speech_in(speech, shot["start"], shot["end"])
+        say("컷별 화면과 글자 읽는 중")
+        with ThreadPoolExecutor(max_workers=WORKERS) as pool:
+            list(pool.map(lambda shot: _read_shot(path, folder, shot), shots))
 
-    make_sheets(folder, shots)
-    meta = {"id": vid, "title": title, "source": source, "path": str(path), "duration": duration,
-            "shots": shots, "speech": [{k: u[k] for k in ("start", "end", "text")} for u in speech]}
-    meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
+        speech: list[dict[str, Any]] = []
+        if pipeline is not None:
+            say("내레이션 받아쓰는 중")
+            for u in pipeline.process(audio_io.decode(path)):
+                speech.append({"start": u.start, "end": u.end, "text": u.text,
+                               "words": [{"text": w.text, "start": w.start, "end": w.end} for w in u.words]})
+        for shot in shots:
+            shot["speech"] = speech_in(speech, shot["start"], shot["end"])
+
+        make_sheets(folder, shots)
+    except Exception as exc:
+        set_status(folder, "failed", error=str(exc) if isinstance(exc, (ValueError, FileNotFoundError))
+                   else "영상을 분석하지 못했어요. 다시 시도해 주세요.")
+        raise
+    meta = {"id": vid, "title": title or found_title, "source": source, "path": str(path), "duration": duration,
+            "created_at": time.time(), "shots": shots,
+            "speech": [{k: u[k] for k in ("start", "end", "text")} for u in speech]}
+    tmp = folder / "shots.json.tmp"
+    tmp.write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
+    tmp.replace(meta_path)
+    (folder / "status.json").unlink(missing_ok=True)
     return meta
 
 
-def load(vid: str) -> dict[str, Any]:
-    path = VIDEOS_DIR / vid / "shots.json"
-    if not path.exists():
+def valid_id(vid: str) -> bool:
+    return bool(ID_RE.match(vid))
+
+
+def summary(folder: Path) -> Optional[dict[str, Any]]:
+    """목록에 보일 내용. 끝난 영상이든 처리 중인 영상이든 같은 모양으로."""
+    meta = read_json(folder / "shots.json")
+    if meta:
+        shots = meta["shots"]
+        return {"id": meta["id"], "state": "done", "title": meta["title"], "source": meta["source"],
+                "duration": meta["duration"], "shots": len(shots), "created_at": meta.get("created_at", 0),
+                "thumb": shots[0]["frames"][1] if shots else None}
+    status = read_json(folder / "status.json")
+    if status:
+        return {"id": folder.name, "created_at": status.get("updated_at", 0), "thumb": None, "shots": 0, "duration": None,
+                **status, "title": status.get("title") or status.get("source")}
+    return None
+
+
+def list_videos(root: Optional[Path] = None) -> list[dict[str, Any]]:
+    base = _root(root)
+    if not base.exists():
+        return []
+    found = [s for s in (summary(d) for d in base.iterdir() if d.is_dir()) if s]
+    return sorted(found, key=lambda s: s.get("created_at") or 0, reverse=True)
+
+
+def recover(root: Optional[Path] = None) -> None:
+    """앱이 꺼지면서 멈춘 분석은 실패로 표시한다."""
+    for item in list_videos(root):
+        if item["state"] in ("queued", "running"):
+            set_status(_root(root) / item["id"], "failed", error="앱이 꺼져서 멈췄어요. 지우고 다시 넣어 주세요.")
+
+
+def delete(vid: str, root: Optional[Path] = None) -> None:
+    shutil.rmtree(_root(root) / vid, ignore_errors=True)
+
+
+def to_csv(meta: dict[str, Any]) -> str:
+    out = io.StringIO()
+    writer = csv.writer(out)
+    writer.writerow(["컷", "시작(초)", "끝(초)", "길이(초)", "화면 글자", "내레이션"])
+    for s in meta["shots"]:
+        writer.writerow([s["index"], s["start"], s["end"], s["length"], " / ".join(s["text"]), s["speech"]])
+    return "\ufeff" + out.getvalue()   # 엑셀에서 한글이 안 깨지게
+
+
+def load(vid: str, root: Optional[Path] = None) -> dict[str, Any]:
+    meta = read_json(_root(root) / vid / "shots.json") if valid_id(vid) else None
+    if meta is None:
         raise ValueError(f"분석한 영상 중에 {vid} 가 없어요. 먼저 analyze_video 를 불러 주세요.")
-    return json.loads(path.read_text(encoding="utf-8"))
+    return meta
 
 
 def sheets(vid: str) -> list[Path]:

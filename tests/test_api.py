@@ -1,3 +1,4 @@
+import json
 import shutil
 import threading
 import time
@@ -772,3 +773,23 @@ def test_kkachi_home_files_are_served(make_client):
     for path in ("/home/", "/home/kkachi-rig.js", "/models/kkachi_wings.glb", "/vendor/three/three.module.min.js",
                  "/vendor/three/addons/utils/SkeletonUtils.js"):
         assert client.get(path).status_code == 200, path
+
+
+def test_video_api_lists_serves_and_deletes(make_client, tmp_path):
+    client, _ = make_client(None)
+    folder = tmp_path / "videos" / "abc123"
+    (folder / "frames").mkdir(parents=True)
+    (folder / "frames" / "shot001_b.jpg").write_bytes(b"jpg")
+    shot = {"index": 1, "start": 0.0, "end": 2.0, "length": 2.0, "text": ["멋"], "speech": "난",
+            "frames": ["frames/shot001_a.jpg", "frames/shot001_b.jpg", "frames/shot001_c.jpg"]}
+    (folder / "shots.json").write_text(json.dumps({"id": "abc123", "title": "광고", "source": "x", "path": "/none",
+                                                   "duration": 2.0, "shots": [shot], "speech": []}), encoding="utf-8")
+    assert client.get("/api/videos").json()[0]["state"] == "done"
+    assert client.get("/api/videos/abc123").json()["state"] == "done"
+    assert client.get("/api/videos/abc123/frames/shot001_b.jpg").content == b"jpg"
+    assert client.get("/api/videos/abc123/frames/..%2Fshots.json").status_code == 404
+    assert "멋" in client.get("/api/videos/abc123/shots.csv").text
+    assert client.get("/api/videos/abc123/play").status_code == 404
+    assert client.post("/api/videos", json={"source": "file:///etc/passwd"}).status_code == 400
+    assert client.delete("/api/videos/abc123").status_code == 204
+    assert client.get("/api/videos/abc123").status_code == 404

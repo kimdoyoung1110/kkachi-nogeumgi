@@ -9,10 +9,11 @@
 </head>
 <body>
   <header class="topbar">
-    <a class="brand" href="#/">
+    <button class="brand" id="brand-menu" aria-haspopup="menu" title="까치녹음기와 까치 영상분석기 오가기">
       <span class="brand-mark" aria-hidden="true">🐦‍⬛</span>
-      <span class="brand-name">까치녹음기</span>
-    </a>
+      <span class="brand-name" id="brand-name">까치녹음기</span>
+      <span class="brand-caret" aria-hidden="true">▾</span>
+    </button>
     <form class="search" role="search" id="search-form">
       <span class="search-icon" aria-hidden="true">⌕</span>
       <input type="search" id="search-input" placeholder="모든 녹음에서 찾기" aria-label="모든 녹음에서 찾기" autocomplete="off">

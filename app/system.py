@@ -92,7 +92,7 @@ def apply_update(data_dir: Optional[Path] = None) -> dict[str, Any]:
     if pull.returncode != 0:
         log.error("git pull 실패: %s", pull.stderr.strip())
         return {"ok": False, "message": "새 버전을 받지 못했어요. 인터넷 연결을 확인하고 다시 시도해 주세요."}
-    uv = _find_uv()
+    uv = find_uv()
     if uv:
         sync = subprocess.run([uv, "sync", "--frozen", "--no-dev"], cwd=REPO_DIR, capture_output=True, text=True, timeout=900)
         if sync.returncode != 0:
@@ -171,7 +171,7 @@ def _rebuild_app_if_needed(before: str) -> None:
         logging.getLogger(__name__).error("앱 다시 만들기 실패: %s", r.stderr.strip())
 
 
-def _find_uv() -> Optional[str]:
+def find_uv() -> Optional[str]:
     for p in (Path.home() / ".local/bin/uv", Path("/opt/homebrew/bin/uv"), Path("/usr/local/bin/uv")):
         if p.exists():
             return str(p)
