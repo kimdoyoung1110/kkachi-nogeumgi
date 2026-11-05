@@ -268,6 +268,40 @@ async function refreshVideos() {
   if (items.some((it) => it.state === "queued" || it.state === "running")) videoPoll = setTimeout(refreshVideos, 1500);
 }
 
+const FRAME_NAMES = ["시작", "중간", "끝"];
+
+// 컷 사진 크게 보기: 그 컷의 시작·중간·끝을 좌우로 넘긴다
+function openFrames(id, shot, start) {
+  let at = start;
+  const box = document.createElement("dialog");
+  box.className = "frame-viewer";
+  box.innerHTML = `
+    <button class="frame-close" aria-label="닫기">✕</button>
+    <button class="frame-nav frame-prev" aria-label="이전 사진">‹</button>
+    <img alt="">
+    <button class="frame-nav frame-next" aria-label="다음 사진">›</button>
+    <p class="frame-label"></p>`;
+  const show = () => {
+    box.querySelector("img").src = videoFrame(id, shot.frames[at]);
+    box.querySelector("img").alt = `컷 ${shot.index} ${FRAME_NAMES[at]} 화면`;
+    box.querySelector(".frame-label").textContent = `컷 ${shot.index} · ${FRAME_NAMES[at]} · ${at + 1}/${shot.frames.length}`;
+  };
+  const go = (step) => { at = (at + step + shot.frames.length) % shot.frames.length; show(); };
+  box.querySelector(".frame-prev").addEventListener("click", () => go(-1));
+  box.querySelector(".frame-next").addEventListener("click", () => go(1));
+  box.querySelector(".frame-close").addEventListener("click", () => box.close());
+  box.addEventListener("click", (e) => { if (e.target === box) box.close(); });   // 바깥쪽을 누르면 닫기
+  box.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowLeft") go(-1);
+    if (e.key === "ArrowRight") go(1);
+    if (e.key === "ArrowLeft" || e.key === "ArrowRight") e.stopPropagation();
+  });
+  box.addEventListener("close", () => box.remove());
+  document.body.append(box);
+  show();
+  box.showModal();
+}
+
 async function renderVideo(id) {
   view.classList.add("wide");
   let meta;
@@ -285,19 +319,23 @@ async function renderVideo(id) {
     </div>
     <video id="video-player" class="video-player" controls preload="metadata" src="/api/videos/${id}/play"></video>
     <div class="video-table-wrap"><table class="video-table">
-      <thead><tr><th>컷</th><th>시작</th><th>길이</th><th>화면</th><th>화면 글자</th><th>내레이션</th></tr></thead>
-      <tbody>${meta.shots.map((s) => `<tr data-start="${s.start}" data-end="${s.end}" tabindex="0">
-        <td>${s.index}</td><td>${clock(s.start)}</td><td>${s.length.toFixed(1)}초</td>
-        <td class="video-frames">${s.frames.map((f) => `<img src="${videoFrame(id, f)}" alt="" loading="lazy">`).join("")}</td>
-        <td class="video-text">${esc(s.text.slice(0, 8).join(" / "))}${s.text.length > 8 ? " …" : ""}</td>
-        <td>${esc(s.speech)}</td></tr>`).join("")}</tbody>
+      <thead><tr><th>컷</th><th>화면</th><th>내용</th></tr></thead>
+      <tbody>${meta.shots.map((s, i) => `<tr data-start="${s.start}" data-end="${s.end}" tabindex="0">
+        <td class="video-shot"><b>${s.index}</b><small>${clock(s.start)}</small><small>${s.length.toFixed(1)}초</small></td>
+        <td class="video-frames">${s.frames.map((f, n) => `<button class="video-frame" data-shot="${i}" data-frame="${n}" aria-label="컷 ${s.index} ${FRAME_NAMES[n]} 화면 크게 보기"><img src="${videoFrame(id, f)}" alt="" loading="lazy"></button>`).join("")}</td>
+        <td class="video-notes">${s.text.length ? `<p><small>화면 글자</small>${esc(s.text.slice(0, 8).join(" / "))}${s.text.length > 8 ? " …" : ""}</p>` : ""}
+          ${s.speech ? `<p><small>내레이션</small>${esc(s.speech)}</p>` : ""}</td></tr>`).join("")}</tbody>
     </table></div>`;
   const player = $("#video-player");
   const rows = [...view.querySelectorAll(".video-table tbody tr")];
   const seek = (row) => { player.currentTime = +row.dataset.start; player.play(); player.scrollIntoView({ block: "nearest" }); };
   rows.forEach((row) => {
-    row.addEventListener("click", () => seek(row));
-    row.addEventListener("keydown", (e) => { if (e.key === "Enter") seek(row); });
+    row.addEventListener("click", (e) => {
+      const frame = e.target.closest(".video-frame");
+      if (frame) openFrames(id, meta.shots[+frame.dataset.shot], +frame.dataset.frame);
+      else seek(row);
+    });
+    row.addEventListener("keydown", (e) => { if (e.key === "Enter" && e.target === row) seek(row); });
   });
   player.addEventListener("timeupdate", () => {
     rows.forEach((row) => row.classList.toggle("on", player.currentTime >= +row.dataset.start && player.currentTime < +row.dataset.end));
