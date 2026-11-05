@@ -670,11 +670,26 @@ body.mode-video .search, body.mode-video #btn-record, body.mode-video #btn-uploa
 .video-table tbody tr { cursor: pointer; }
 .video-table tbody tr:hover { background: var(--surface-2); }
 .video-table tbody tr.on { background: var(--accent-soft); }
-.video-frames { white-space: nowrap; }
-.video-frames img { width: 96px; height: 54px; object-fit: cover; border-radius: 4px; margin-right: 3px; background: var(--surface-2); }
-.video-text { min-width: 160px; }
+.video-shot { width: 56px; white-space: nowrap; }
+.video-shot b, .video-shot small { display: block; }
+.video-shot small { color: var(--text-2); font-size: 12px; }
+.video-frames { white-space: nowrap; width: 1%; }
+.video-frame { border: 0; padding: 0; margin-right: 3px; background: none; cursor: zoom-in; border-radius: 4px; }
+.video-frame:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.video-frame img { display: block; width: 112px; height: 63px; object-fit: cover; border-radius: 4px; background: var(--surface-2); }
+.video-notes p { margin: 0 0 6px; line-height: 1.5; }
+.video-notes small { display: block; color: var(--text-3); font-size: 12px; }
+.frame-viewer { position: fixed; inset: 0; width: 100vw; height: 100vh; max-width: none; max-height: none; margin: 0; padding: 0; border: 0; background: rgba(0,0,0,.88); color: #fff; }
+.frame-viewer[open] { display: grid; place-items: center; }
+.frame-viewer::backdrop { background: transparent; }
+.frame-viewer img { max-width: calc(100vw - 150px); max-height: calc(100vh - 110px); border-radius: 6px; }
+.frame-nav, .frame-close { position: absolute; border: 0; border-radius: 50%; background: rgba(255,255,255,.14); color: #fff; cursor: pointer; }
+.frame-nav:hover, .frame-close:hover { background: rgba(255,255,255,.28); }
+.frame-nav { top: 50%; width: 48px; height: 48px; margin-top: -24px; font-size: 28px; line-height: 1; }
+.frame-prev { left: 16px; }
+.frame-next { right: 16px; }
+.frame-close { top: 16px; right: 16px; width: 40px; height: 40px; font-size: 18px; }
+.frame-label { position: absolute; left: 0; right: 0; bottom: 18px; margin: 0; text-align: center; font-size: 14px; color: #ddd; }
 .muted { color: var(--text-2); font-size: 14px; }
 .video-add .muted { margin: 0; }
 .back-link { font-size: 14px; color: var(--text-2); }
-.video-table td:nth-child(-n+3) { white-space: nowrap; }
-.video-table td:last-child { min-width: 150px; }
