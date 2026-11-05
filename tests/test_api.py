@@ -765,3 +765,10 @@ def test_reminder_range_and_preset_update(make_client, tmp_path):
     with client2:
         preset = next(r for r in client2.get("/api/reminders").json() if r["id"] == "2026-ku-convergence")
         assert preset["end_date"] == "2026-10-16" and preset["popup"] and preset["muted"]   # 끈 건 그대로
+
+
+def test_kkachi_home_files_are_served(make_client):
+    client, _ = make_client(None)
+    for path in ("/home/", "/home/kkachi-rig.js", "/models/kkachi_wings.glb", "/vendor/three/three.module.min.js",
+                 "/vendor/three/addons/utils/SkeletonUtils.js"):
+        assert client.get(path).status_code == 200, path

@@ -631,3 +631,9 @@ mark { background: color-mix(in srgb, var(--warn) 28%, transparent); color: inhe
 .rem-end .input { flex: 1; }
 .rem-pop-opt { grid-column: 1 / -1; }
 .rem-pop h2 b { color: var(--accent); }
+
+/* 까치 집 (3D 까치 키우기) */
+.kkachi-home { position: fixed; inset: 0; z-index: 70; background: #fdf6ec; }
+.kkachi-home[hidden] { display: none; }
+.kkachi-home iframe { width: 100%; height: 100%; border: 0; display: block; }
+.kkachi-home-close { position: absolute; top: 12px; left: 12px; background: #fff; color: #3b3530; border-color: #0002; }

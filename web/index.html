@@ -18,11 +18,16 @@
       <input type="search" id="search-input" placeholder="모든 녹음에서 찾기" aria-label="모든 녹음에서 찾기" autocomplete="off">
     </form>
     <nav class="topbar-actions">
+      <button class="btn btn-ghost" id="btn-home">🏠 까치 집</button>
       <button class="btn btn-ghost btn-record" id="btn-record"><span class="rec-dot"></span>녹음하기</button>
       <button class="btn btn-primary" id="btn-upload">파일 올리기</button>
       <button class="icon-btn icon-btn-lg" id="btn-settings" aria-label="설정" title="설정">⚙</button>
     </nav>
   </header>
+
+  <div class="kkachi-home" id="kkachi-home" hidden>
+    <button class="btn btn-ghost kkachi-home-close" id="kkachi-home-close">← 녹음기로 돌아가기</button>
+  </div>
 
   <div class="reminder-bar" id="reminder-bar" hidden></div>
 
