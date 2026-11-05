@@ -288,6 +288,121 @@ def to_csv(meta: dict[str, Any]) -> str:
     return "\ufeff" + out.getvalue()   # 엑셀에서 한글이 안 깨지게
 
 
+def _wrap(draw: Any, text: str, font: Any, width: int) -> list[str]:
+    """한글은 띄어쓰기가 없어도 글자 단위로 줄을 나눈다."""
+    lines, line = [], ""
+    for ch in text:
+        if draw.textlength(line + ch, font=font) > width:
+            lines.append(line)
+            line = ch.lstrip()
+        else:
+            line += ch
+    return lines + [line] if line else lines
+
+
+def make_pdf(meta: dict[str, Any], folder: Path, out: Path) -> Path:
+    """샷 리스트 PDF: 컷마다 시작·중간·끝 스냅샷과 화면 글자, 내레이션. A4 세로."""
+    from PIL import Image, ImageDraw, ImageFont
+
+    page_w, page_h, margin = 1240, 1754, 60     # A4, 150dpi
+    fonts = "/System/Library/Fonts/AppleSDGothicNeo.ttc"
+    title_font, head_font, body_font = (ImageFont.truetype(fonts, size) for size in (34, 24, 21))
+    thumb_w, thumb_h, gap = 366, 206, 8
+    pages: list[Any] = []
+
+    def new_page() -> Any:
+        pages.append(Image.new("RGB", (page_w, page_h), "white"))
+        return ImageDraw.Draw(pages[-1])
+
+    draw = new_page()
+    y = margin
+    for line in _wrap(draw, meta["title"], title_font, page_w - margin * 2):
+        draw.text((margin, y), line, fill="#1d1d1f", font=title_font)
+        y += 46
+    draw.text((margin, y + 2), f"{meta['duration']:.1f}초 · 컷 {len(meta['shots'])}개", fill="#5f5e5a", font=body_font)
+    y += 54
+
+    for shot in meta["shots"]:
+        notes = []
+        if shot["text"]:
+            kept = shot["text"][:MAX_TEXT_LINES]
+            notes += _wrap(draw, "화면 글자: " + " / ".join(kept) + (" …" if len(shot["text"]) > len(kept) else ""),
+                           body_font, page_w - margin * 2)
+        if shot["speech"]:
+            notes += _wrap(draw, "내레이션: " + shot["speech"], body_font, page_w - margin * 2)
+        height = 38 + thumb_h + 8 + len(notes) * 30 + 22
+        if y + height > page_h - margin:
+            draw = new_page()
+            y = margin
+        draw.text((margin, y), f"컷 {shot['index']}", fill="#1d1d1f", font=head_font)
+        draw.text((margin + 110, y + 3), f"{shot['start']:.2f}초부터 · {shot['length']:.2f}초", fill="#5f5e5a", font=body_font)
+        y += 38
+        for col, name in enumerate(shot["frames"]):
+            with Image.open(folder / name) as im:
+                thumb = im.convert("RGB").resize((thumb_w, thumb_h))
+            pages[-1].paste(thumb, (margin + col * (thumb_w + gap), y))
+        y += thumb_h + 8
+        for line in notes:
+            draw.text((margin, y), line, fill="#333333", font=body_font)
+            y += 30
+        y += 22
+    out.parent.mkdir(parents=True, exist_ok=True)
+    pages[0].save(out, "PDF", save_all=True, append_images=pages[1:], resolution=150, quality=80)
+    return out
+
+
+def pick_shots(meta: dict[str, Any], numbers: Optional[list[int]]) -> dict[str, Any]:
+    """고른 컷만 남긴 사본. numbers 가 없으면 전부."""
+    if not numbers:
+        return meta
+    known = {s["index"] for s in meta["shots"]}
+    missing = sorted(set(numbers) - known)
+    if missing:
+        raise ValueError(f"없는 컷 번호예요: {missing}. 이 영상은 컷 1~{len(known)}까지 있어요.")
+    return {**meta, "shots": [s for s in meta["shots"] if s["index"] in set(numbers)]}
+
+
+def find_pdf(name: str, folders: list[Path]) -> Path:
+    """파일 경로 또는 이름 일부로 PDF 를 찾는다. 여러 개면 고르도록 알려 준다."""
+    direct = Path(name).expanduser()
+    if direct.is_absolute():
+        if direct.suffix.lower() == ".pdf" and direct.is_file():
+            return direct
+        raise FileNotFoundError(f"PDF 파일을 찾지 못했어요: {name}")
+    word = name.removesuffix(".pdf").lower()
+    found = [p for folder in folders if folder.is_dir() for p in folder.glob("*.pdf") if word in p.stem.lower()]
+    if not found:
+        raise FileNotFoundError(f"'{name}' 이름이 들어간 PDF 를 찾지 못했어요. 파일 전체 경로를 알려 주세요.")
+    if len(found) > 1:
+        raise ValueError("이름이 맞는 PDF 가 여러 개예요. 전체 경로로 골라 주세요:\n" + "\n".join(str(p) for p in found))
+    return found[0]
+
+
+def join_pdfs(original: Path, added: Path, out: Path) -> Path:
+    """original 뒤에 added 를 붙여 out 에 새로 만든다. 원본 파일은 건드리지 않는다."""
+    from pypdf import PdfWriter
+
+    writer = PdfWriter()
+    writer.append(str(original))
+    writer.append(str(added))
+    writer.write(str(out))
+    writer.close()
+    return out
+
+
+def free_path(path: Path) -> Path:
+    """같은 이름의 파일이 있으면 덮어쓰지 않게 번호를 붙인다."""
+    n, found = 2, path
+    while found.exists():
+        found = path.with_name(f"{path.stem} {n}{path.suffix}")
+        n += 1
+    return found
+
+
+def pdf_name(meta: dict[str, Any]) -> str:
+    return re.sub(r'[/\\:*?"<>|]', " ", meta["title"]).strip()[:80] + " 샷 리스트.pdf"
+
+
 def load(vid: str, root: Optional[Path] = None) -> dict[str, Any]:
     meta = read_json(_root(root) / vid / "shots.json") if valid_id(vid) else None
     if meta is None:

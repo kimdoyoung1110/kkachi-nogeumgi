@@ -491,6 +491,12 @@ def create_app(
             raise HTTPException(404, "그 화면을 찾지 못했어요.")
         return FileResponse(path, media_type="image/jpeg")
 
+    @app.get("/api/videos/{vid}/shots.pdf")
+    def video_pdf(vid: str) -> FileResponse:
+        meta = video_meta(vid)
+        path = video.make_pdf(meta, videos_dir / vid, videos_dir / vid / "shots.pdf")
+        return FileResponse(path, media_type="application/pdf", filename=video.pdf_name(meta))
+
     @app.get("/api/videos/{vid}/shots.csv")
     def video_csv(vid: str) -> Response:
         meta = video_meta(vid)

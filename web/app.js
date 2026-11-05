@@ -278,6 +278,7 @@ async function renderVideo(id) {
     <div class="video-head">
       <div><h1>${esc(meta.title)}</h1><p class="muted">${meta.duration.toFixed(1)}초 · 컷 ${meta.shots.length}개</p></div>
       <div class="video-head-actions">
+        <a class="btn btn-ghost" href="/api/videos/${id}/shots.pdf" download>PDF 내보내기</a>
         <a class="btn btn-ghost" href="/api/videos/${id}/shots.csv" download>CSV 내보내기</a>
         <button class="btn btn-ghost" id="video-delete">지우기</button>
       </div>
