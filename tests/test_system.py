@@ -26,7 +26,7 @@ def repos(tmp_path, monkeypatch):
     installed = tmp_path / "installed"
     subprocess.run(["git", "clone", "-q", str(origin), str(installed)], check=True, capture_output=True)
     monkeypatch.setattr(system, "REPO_DIR", installed)
-    monkeypatch.setattr(system, "_find_uv", lambda: None)
+    monkeypatch.setattr(system, "find_uv", lambda: None)
     return dev, installed
 
 

@@ -637,3 +637,44 @@ mark { background: color-mix(in srgb, var(--warn) 28%, transparent); color: inhe
 .kkachi-home[hidden] { display: none; }
 .kkachi-home iframe { width: 100%; height: 100%; border: 0; display: block; }
 .kkachi-home-close { position: absolute; top: 12px; left: 12px; background: #fff; color: #3b3530; border-color: #0002; }
+
+/* 까치 영상분석기 */
+button.brand { background: none; border: 0; padding: 0; cursor: pointer; }
+.brand-caret { color: var(--text-3); font-size: 12px; }
+body.mode-video .search, body.mode-video #btn-record, body.mode-video #btn-upload { display: none; }
+.video-add { padding: 18px 20px; margin-bottom: 12px; }
+.video-add h2 { margin: 0 0 4px; font-size: 17px; }
+.video-add-row { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+.video-add-row .input { flex: 1; min-width: 220px; }
+.video-claude { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 20px; margin-bottom: 12px; }
+.video-list { display: grid; gap: 8px; }
+.video-item { display: flex; align-items: center; gap: 14px; padding: 10px 14px; color: var(--text); }
+.video-thumb { width: 112px; height: 63px; border-radius: 6px; overflow: hidden; background: var(--surface-2); display: grid; place-items: center; flex-shrink: 0; }
+.video-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.video-item-text { display: grid; gap: 3px; flex: 1; min-width: 0; }
+.video-item-text b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.video-item-text small { color: var(--text-2); }
+.video-error { color: var(--danger); }
+.video-bar { height: 4px; border-radius: 2px; background: var(--surface-2); overflow: hidden; }
+.video-bar i { display: block; height: 100%; background: var(--accent); transition: width .4s; }
+.video-empty { text-align: center; padding: 24px; }
+.video-head { display: flex; justify-content: space-between; gap: 12px; margin: 10px 0 12px; }
+.video-head h1 { margin: 0; font-size: 20px; }
+.video-head p { margin: 4px 0 0; }
+.video-head-actions { display: flex; gap: 8px; flex-shrink: 0; align-items: flex-start; }
+.video-player { display: block; width: 100%; max-height: 46vh; background: #000; border-radius: var(--radius-sm); margin-bottom: 14px; position: sticky; top: 62px; z-index: 5; }
+.video-table-wrap { overflow-x: auto; }
+.video-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.video-table th { text-align: left; color: var(--text-2); font-weight: 600; padding: 6px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+.video-table td { padding: 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.video-table tbody tr { cursor: pointer; }
+.video-table tbody tr:hover { background: var(--surface-2); }
+.video-table tbody tr.on { background: var(--accent-soft); }
+.video-frames { white-space: nowrap; }
+.video-frames img { width: 96px; height: 54px; object-fit: cover; border-radius: 4px; margin-right: 3px; background: var(--surface-2); }
+.video-text { min-width: 160px; }
+.muted { color: var(--text-2); font-size: 14px; }
+.video-add .muted { margin: 0; }
+.back-link { font-size: 14px; color: var(--text-2); }
+.video-table td:nth-child(-n+3) { white-space: nowrap; }
+.video-table td:last-child { min-width: 150px; }

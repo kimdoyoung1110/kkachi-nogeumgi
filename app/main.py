@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import re
+import secrets
 import shutil
 import subprocess
 import threading
@@ -22,7 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from app import audio as audio_io
-from app import config, export, live, phone, slides, system, terms, voicememos
+from app import config, export, live, phone, slides, system, terms, video, video_connect, voicememos
 from app.db import Database
 from app.worker import STAGE_LABELS, Worker
 
@@ -132,6 +133,10 @@ class SpeakerMerge(BaseModel):
 class UtterancePatch(BaseModel):
     text: Optional[str] = None
     speaker: Optional[int] = None
+
+
+class VideoRequest(BaseModel):
+    source: str
 
 
 class RetranscribeRequest(BaseModel):
@@ -403,6 +408,95 @@ def create_app(
         if not path.exists():
             raise HTTPException(404, "녹음 파일이 없어요.")
         return FileResponse(path)
+
+    # ---- 까치 영상분석기 ----
+
+    videos_dir = data_dir / "videos"
+
+    def video_folder(vid: str) -> Path:
+        if not video.valid_id(vid) or not (videos_dir / vid).is_dir():
+            raise HTTPException(404, "그 영상을 찾지 못했어요.")
+        return videos_dir / vid
+
+    def video_meta(vid: str) -> dict:
+        meta = video.read_json(video_folder(vid) / "shots.json")
+        if meta is None:
+            raise HTTPException(404, "아직 분석이 끝나지 않았어요.")
+        return meta
+
+    @app.get("/api/videos")
+    def list_videos() -> list[dict]:
+        return video.list_videos(videos_dir)
+
+    @app.post("/api/videos", status_code=201)
+    def add_video(body: VideoRequest) -> dict:
+        source = body.source.strip()
+        if not re.match(r"https?://\S+$", source):
+            raise HTTPException(400, "영상 주소를 넣어 주세요. https:// 로 시작해요.")
+        vid = video.video_id(source)
+        current = video.summary(videos_dir / vid)
+        if not current or current["state"] == "failed":
+            worker.enqueue_video(vid, source)
+        return {"id": vid}
+
+    @app.post("/api/videos/upload", status_code=201)
+    def upload_video(file: UploadFile = File(...)) -> dict:
+        vid = secrets.token_hex(6)
+        name = Path(file.filename or "영상.mp4")
+        folder = videos_dir / vid
+        folder.mkdir(parents=True)
+        target = folder / f"upload{name.suffix.lower()[:8]}"
+        with open(target, "wb") as out:
+            shutil.copyfileobj(file.file, out, 1024 * 1024)
+        worker.enqueue_video(vid, str(target), name.stem)
+        return {"id": vid}
+
+    @app.get("/api/videos/claude")
+    def claude_status() -> dict:
+        return {"status": video_connect.status(system.find_uv() or "uv", system.REPO_DIR)}
+
+    @app.post("/api/videos/claude")
+    def claude_connect() -> dict:
+        uv = system.find_uv()
+        if not uv:
+            raise HTTPException(500, "연결에 필요한 프로그램(uv)을 찾지 못했어요. 로그를 보내주세요.")
+        try:
+            video_connect.connect(uv, system.REPO_DIR)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return {"status": "on"}
+
+    @app.get("/api/videos/{vid}")
+    def get_video(vid: str) -> dict:
+        folder = video_folder(vid)
+        meta = video.read_json(folder / "shots.json")
+        return {**meta, "state": "done"} if meta else video.summary(folder) or {"id": vid, "state": "failed"}
+
+    @app.delete("/api/videos/{vid}", status_code=204)
+    def delete_video(vid: str) -> None:
+        video_folder(vid)
+        video.delete(vid, videos_dir)
+
+    @app.get("/api/videos/{vid}/play")
+    def play_video(vid: str) -> FileResponse:
+        path = Path(video_meta(vid)["path"])
+        if not path.exists():
+            raise HTTPException(404, "영상 파일이 없어요.")
+        return FileResponse(path)
+
+    @app.get("/api/videos/{vid}/frames/{name}")
+    def video_frame(vid: str, name: str) -> FileResponse:
+        path = video_folder(vid) / "frames" / name
+        if not re.match(r"^[\w.-]+\.jpg$", name) or not path.exists():
+            raise HTTPException(404, "그 화면을 찾지 못했어요.")
+        return FileResponse(path, media_type="image/jpeg")
+
+    @app.get("/api/videos/{vid}/shots.csv")
+    def video_csv(vid: str) -> Response:
+        meta = video_meta(vid)
+        name = quote(f"{meta['title']} 샷 리스트.csv")
+        return Response(video.to_csv(meta), media_type="text/csv; charset=utf-8",
+                        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{name}"})
 
     # ---- 검색 / 내보내기 ----
 

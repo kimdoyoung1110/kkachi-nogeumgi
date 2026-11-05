@@ -151,10 +151,18 @@ function hashParams() {
 
 function route() {
   const m = location.hash.match(/^#\/r\/([\w-]+)/);
+  const v = location.hash.match(/^#\/v\/([\w-]+)/);
+  const videoMode = !!v || location.hash.startsWith("#/videos");
+  document.body.classList.toggle("mode-video", videoMode);
+  $("#brand-name").textContent = videoMode ? "까치 영상분석기" : "까치녹음기";
+  clearTimeout(videoPoll);
   view.classList.remove("wide");
   closeSlides();
   const searchInput = $("#search-input");
-  if (location.hash.startsWith("#/search")) {
+  if (videoMode) {
+    if (v) renderVideo(v[1]);
+    else renderVideos();
+  } else if (location.hash.startsWith("#/search")) {
     const q = hashParams().get("q") || "";
     if (document.activeElement !== searchInput) searchInput.value = q;
     renderSearch(q);
@@ -165,6 +173,140 @@ function route() {
   }
 }
 window.addEventListener("hashchange", route);
+
+/* ---------- 까치 영상분석기 ---------- */
+
+let videoPoll = 0;
+const videoFrame = (id, path) => `/api/videos/${id}/frames/${encodeURIComponent(path.split("/").pop())}`;
+const clock = (sec) => `${Math.floor(sec / 60)}:${(sec % 60).toFixed(1).padStart(4, "0")}`;
+
+async function renderVideos() {
+  view.innerHTML = `
+    <form class="card video-add" id="video-form">
+      <h2>광고 영상 분석하기</h2>
+      <p class="muted">영상 주소를 넣거나 파일을 고르면 컷, 화면, 글자, 내레이션을 표로 정리해요.</p>
+      <div class="video-add-row">
+        <input class="input" id="video-url" type="url" placeholder="https://youtu.be/..." aria-label="영상 주소" autocomplete="off">
+        <button class="btn btn-primary" type="submit">분석하기</button>
+        <button class="btn btn-ghost" type="button" id="video-pick">파일 고르기</button>
+        <input type="file" id="video-file" accept="video/*" hidden>
+      </div>
+    </form>
+    <section class="card video-claude" id="video-claude" hidden></section>
+    <section id="video-list" class="video-list"></section>`;
+  $("#video-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const source = $("#video-url").value.trim();
+    if (!source) return;
+    try {
+      await api("/api/videos", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ source }) });
+      $("#video-url").value = "";
+      refreshVideos();
+    } catch (err) { toast(err.message, "error"); }
+  });
+  $("#video-pick").addEventListener("click", () => $("#video-file").click());
+  $("#video-file").addEventListener("change", async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    toast("영상을 올리는 중…");
+    const form = new FormData();
+    form.append("file", file);
+    try { await api("/api/videos/upload", { method: "POST", body: form }); refreshVideos(); }
+    catch (err) { toast(err.message, "error"); }
+    e.target.value = "";
+  });
+  renderClaudeCard();
+  refreshVideos();
+}
+
+async function renderClaudeCard() {
+  let status = "off";
+  try { status = (await api("/api/videos/claude")).status; } catch {}
+  const box = $("#video-claude");
+  if (!box) return;
+  box.hidden = false;
+  if (status === "on") {
+    box.innerHTML = `<b>Claude 앱에 연결됐어요.</b> <span class="muted">Claude 채팅에 영상 주소를 넣고 분석해 달라고 말해 보세요.</span>`;
+    return;
+  }
+  box.innerHTML = `<div><b>Claude 앱과 함께 쓰기</b><br><span class="muted">Claude 채팅에서 영상 주소로 바로 분석하고 이어서 물어볼 수 있어요.</span></div>
+    <button class="btn btn-ghost" id="video-connect">Claude 앱에 연결</button>`;
+  $("#video-connect").addEventListener("click", async () => {
+    const ok = await confirmDialog("Claude 앱 설정에 까치 영상분석기를 추가할까요?<br>지금 설정은 복사본을 남겨 두고, 다른 설정은 바꾸지 않아요.", "연결", { html: true, primary: true });
+    if (!ok) return;
+    try {
+      await api("/api/videos/claude", { method: "POST" });
+      toast("연결했어요. Claude 앱을 ⌘Q로 껐다 다시 켜 주세요.");
+      renderClaudeCard();
+    } catch (err) { toast(err.message, "error"); }
+  });
+}
+
+async function refreshVideos() {
+  clearTimeout(videoPoll);
+  const list = $("#video-list");
+  if (!list) return;
+  let items;
+  try { items = await api("/api/videos"); } catch (err) { toast(err.message, "error"); return; }
+  if (!$("#video-list")) return;
+  list.innerHTML = items.length ? items.map((it) => {
+    const running = it.state === "queued" || it.state === "running";
+    const sub = it.state === "done" ? `${it.duration.toFixed(0)}초 · 컷 ${it.shots}개`
+      : it.state === "failed" ? `<span class="video-error">${esc(it.error || "분석하지 못했어요.")}</span>`
+      : esc(it.step || "기다리는 중");
+    const thumb = it.thumb ? `<img src="${videoFrame(it.id, it.thumb)}" alt="" loading="lazy">` : `<span class="video-thumb-empty">🎬</span>`;
+    const body = `<span class="video-thumb">${thumb}</span>
+      <span class="video-item-text"><b>${esc(it.title || "영상")}</b><small>${sub}</small>
+      ${running ? `<span class="video-bar"><i style="width:${Math.round((it.progress || 0) * 100)}%"></i></span>` : ""}</span>`;
+    return it.state === "done" ? `<a class="card video-item" href="#/v/${esc(it.id)}">${body}</a>`
+      : `<div class="card video-item">${body}${it.state === "failed" ? `<button class="btn btn-ghost" data-video-delete="${esc(it.id)}">지우기</button>` : ""}</div>`;
+  }).join("") : `<p class="muted video-empty">아직 분석한 영상이 없어요.</p>`;
+  list.querySelectorAll("[data-video-delete]").forEach((b) => b.addEventListener("click", async () => {
+    await api(`/api/videos/${b.dataset.videoDelete}`, { method: "DELETE" });
+    refreshVideos();
+  }));
+  if (items.some((it) => it.state === "queued" || it.state === "running")) videoPoll = setTimeout(refreshVideos, 1500);
+}
+
+async function renderVideo(id) {
+  view.classList.add("wide");
+  let meta;
+  try { meta = await api(`/api/videos/${id}`); } catch (err) { view.innerHTML = `<p class="muted">${esc(err.message)}</p>`; return; }
+  if (meta.state !== "done") { location.hash = "#/videos"; return; }
+  view.innerHTML = `
+    <a class="back-link" href="#/videos">← 영상 목록</a>
+    <div class="video-head">
+      <div><h1>${esc(meta.title)}</h1><p class="muted">${meta.duration.toFixed(1)}초 · 컷 ${meta.shots.length}개</p></div>
+      <div class="video-head-actions">
+        <a class="btn btn-ghost" href="/api/videos/${id}/shots.csv" download>CSV 내보내기</a>
+        <button class="btn btn-ghost" id="video-delete">지우기</button>
+      </div>
+    </div>
+    <video id="video-player" class="video-player" controls preload="metadata" src="/api/videos/${id}/play"></video>
+    <div class="video-table-wrap"><table class="video-table">
+      <thead><tr><th>컷</th><th>시작</th><th>길이</th><th>화면</th><th>화면 글자</th><th>내레이션</th></tr></thead>
+      <tbody>${meta.shots.map((s) => `<tr data-start="${s.start}" data-end="${s.end}" tabindex="0">
+        <td>${s.index}</td><td>${clock(s.start)}</td><td>${s.length.toFixed(1)}초</td>
+        <td class="video-frames">${s.frames.map((f) => `<img src="${videoFrame(id, f)}" alt="" loading="lazy">`).join("")}</td>
+        <td class="video-text">${esc(s.text.slice(0, 8).join(" / "))}${s.text.length > 8 ? " …" : ""}</td>
+        <td>${esc(s.speech)}</td></tr>`).join("")}</tbody>
+    </table></div>`;
+  const player = $("#video-player");
+  const rows = [...view.querySelectorAll(".video-table tbody tr")];
+  const seek = (row) => { player.currentTime = +row.dataset.start; player.play(); player.scrollIntoView({ block: "nearest" }); };
+  rows.forEach((row) => {
+    row.addEventListener("click", () => seek(row));
+    row.addEventListener("keydown", (e) => { if (e.key === "Enter") seek(row); });
+  });
+  player.addEventListener("timeupdate", () => {
+    rows.forEach((row) => row.classList.toggle("on", player.currentTime >= +row.dataset.start && player.currentTime < +row.dataset.end));
+  });
+  $("#video-delete").addEventListener("click", async () => {
+    if (!await confirmDialog("이 영상과 분석 결과를 지울까요?")) return;
+    await api(`/api/videos/${id}`, { method: "DELETE" });
+    location.hash = "#/videos";
+  });
+}
 
 /* ---------- 홈: 업로드 + 목록 ---------- */
 
@@ -3402,6 +3544,13 @@ async function showAllNotes() {
 }
 
 $("#btn-settings").addEventListener("click", (e) => { e.stopPropagation(); settingsMenu(e.currentTarget); });
+$("#brand-menu").addEventListener("click", (e) => {
+  e.stopPropagation();
+  openMenu(e.currentTarget, [
+    { label: "까치녹음기", icon: "🎙", run: () => { location.hash = "#/"; } },
+    { label: "까치 영상분석기", icon: "🎬", run: () => { location.hash = "#/videos"; } },
+  ]);
+});
 
 // 까치 집: 페이지를 옮기면 녹음이 끊길 수 있어서 화면 위에 덮어 연다. 닫아도 앱을 끄기 전까진 그대로 둔다
 $("#btn-home").addEventListener("click", () => {

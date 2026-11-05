@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from app import audio as audio_io
+from app import video
 from app.db import Database
 
 log = logging.getLogger(__name__)
@@ -111,6 +112,7 @@ class Worker:
         for rec_id in self.db.ids_with_status("queued"):
             self._queue.put(("process", rec_id))
         self.db.clear_busy()
+        video.recover(self.recordings_dir.parent / "videos")
 
     def enqueue(self, rec_id: str) -> None:
         self.db.update_recording(
@@ -118,6 +120,10 @@ class Worker:
             priority=0, queued_at=time.time(),
         )
         self._queue.put(("process", rec_id))
+
+    def enqueue_video(self, vid: str, source: str, title: Optional[str] = None) -> None:
+        video.set_status(self.recordings_dir.parent / "videos" / vid, "queued", source=source, title=title)
+        self._queue.put(("video", vid, source, title))
 
     def enqueue_retranscribe(self, utt_id: int, language: Optional[str]) -> None:
         self.db.update_utterance(utt_id, busy=1)
@@ -151,8 +157,19 @@ class Worker:
                     self._process(task[1])
                 elif task[0] == "retranscribe":
                     self._retranscribe(task[1], task[2])
+                elif task[0] == "video":
+                    self._video(*task[1:])
             finally:
                 self._queue.task_done()
+
+    def _video(self, vid: str, source: str, title: Optional[str]) -> None:
+        root = self.recordings_dir.parent / "videos"
+        if not (root / vid).exists():
+            return   # 기다리는 사이 지웠다
+        try:
+            video.analyze(source, pipeline=self.pipeline, root=root, vid=vid, title=title)
+        except Exception:
+            log.exception("영상 분석 실패: %s", vid)   # 실패 내용은 status.json 에 남아 화면에 보인다
 
     def _process(self, rec_id: str) -> None:
         # 줄 선 순서대로가 아니라 지금 대기열 맨 앞('이것 먼저'로 당긴 것 포함)을 처리한다.
