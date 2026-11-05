@@ -22,6 +22,14 @@ dev = [
     "pytest>=9.1.1",
 ]
 
+# 까치 영상분석기 시험판: 여자친구 앱 업데이트에 끼지 않게 따로 둔다 (uv run --group video)
+video = [
+    "mcp>=1.12,<2",
+    "pillow>=11",
+    "pyobjc-framework-Vision>=11",
+    "yt-dlp>=2025.1.1",
+]
+
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
