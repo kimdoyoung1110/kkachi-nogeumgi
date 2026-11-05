@@ -1,0 +1,1932 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>까치 집</title>
+<style>
+  :root { --bg1: #fdf6ec; --bg2: #e9f1e4; --text: #3b3530; --accent: #e07a5f; --chip: #ffffffcc; }
+  html, body { margin: 0; height: 100%; background: linear-gradient(180deg, var(--bg1), var(--bg2)); font-family: -apple-system, "Apple SD Gothic Neo", sans-serif; color: var(--text); overflow: hidden; }
+  #stage { position: fixed; inset: 0; }
+  .panel { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; max-width: calc(100% - 32px); }
+  .panel button { border: 0; border-radius: 999px; padding: 10px 14px; background: var(--chip); box-shadow: 0 2px 10px #0001; font: inherit; font-size: 14px; cursor: pointer; }
+  .panel button.on { background: var(--accent); color: #fff; }
+  .title { position: fixed; top: 16px; left: 0; right: 0; text-align: center; font-weight: 700; font-size: 18px; }
+  .hint { position: fixed; top: 44px; left: 0; right: 0; text-align: center; font-size: 13px; opacity: .6; }
+  .bubble { position: fixed; left: 50%; top: 18%; transform: translateX(-50%); background: #fff; border-radius: 16px; padding: 8px 14px; box-shadow: 0 4px 16px #0002; font-size: 15px; opacity: 0; transition: opacity .3s; pointer-events: none; }
+  .bubble.show { opacity: 1; }
+  .picker { position: fixed; left: 50%; bottom: 200px; transform: translateX(-50%); background: #fff; border-radius: 18px; padding: 12px; box-shadow: 0 6px 24px #0002; display: none; flex-wrap: wrap; gap: 8px; justify-content: center; max-width: min(360px, calc(100% - 32px)); z-index: 6; }
+  .picker.show { display: flex; }
+  .picker .pt { width: 100%; text-align: center; font-weight: 700; font-size: 14px; margin-bottom: 2px; }
+  .picker button { border: 0; border-radius: 999px; padding: 8px 12px; background: #fdf1ee; font: inherit; font-size: 14px; cursor: pointer; }
+  .eggTag { position: fixed; transform: translate(-50%, -100%); background: #fffc; border-radius: 999px; padding: 3px 9px; font-size: 12px; box-shadow: 0 2px 8px #0001; pointer-events: none; white-space: nowrap; }
+  .heart { position: fixed; font-size: 26px; pointer-events: none; animation: rise 1.4s ease-out forwards; }
+  @keyframes rise { from { transform: translateY(0) scale(.6); opacity: 1; } to { transform: translateY(-120px) scale(1.2); opacity: 0; } }
+</style>
+<script type="importmap">
+{ "imports": { "three": "/vendor/three/three.module.min.js", "three/addons/": "/vendor/three/addons/" } }
+</script>
+</head>
+<body>
+<div id="stage"></div>
+<div class="title">🏠 까치 집</div>
+<div class="hint" id="hint">끌어서 돌려보기 · 스크롤로 확대</div>
+<div class="bubble" id="bubble"></div>
+<div class="panel" id="panel">
+  <button id="playBtn">🎈 까치랑 놀기</button>
+  <button data-acc="ribbon">🎀 리본</button>
+  <button data-acc="glasses">👓 안경</button>
+  <button data-acc="scarf">🧣 크림슨 목도리</button>
+  <button data-acc="flower">🌸 꽃핀</button>
+  <button data-acc="necklace">💝 하트 목걸이</button>
+  <button data-feed="worm">🪱 지렁이 젤리</button>
+  <button data-feed="cake">🍰 케이크</button>
+  <button id="layBtn">🥚 알 낳기</button>
+  <button id="kinderBtn" style="display:none">🎒 유치원 보내기</button>
+  <button id="dateBtn" style="display:none">💌 소개팅</button>
+  <button id="freeBtn" style="display:none">🕊 독립시키기</button>
+  <button data-act="walk">🐾 산책</button>
+  <button data-act="flap">🪶 파닥파닥</button>
+  <button data-act="shake">💨 부르르</button>
+  <button data-act="chirp">🎵 짹짹</button>
+</div>
+<script type="module">
+import * as THREE from "three";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
+import { MeshoptDecoder } from "three/addons/libs/meshopt_decoder.module.js";
+import * as SkeletonUtils from "three/addons/utils/SkeletonUtils.js";
+import { normalize, buildRig, Animator, shortenLegs, smoothArea, removeArea } from "./kkachi-rig.js";
+
+const stage = document.getElementById("stage");
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+stage.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
+const camera = new THREE.PerspectiveCamera(32, innerWidth / innerHeight, 0.01, 50);
+camera.position.set(0.9, 0.75, 2.6);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.enablePan = false;
+controls.minDistance = 1.4;
+controls.maxDistance = 4.5;
+controls.minPolarAngle = 0.35;
+controls.maxPolarAngle = 1.62;
+controls.target.set(0, 0.5, 0);
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.6;
+controls.addEventListener("start", () => { controls.autoRotate = false; });
+window.__view = (az, el = 0.25, d = 3.2) => {   // 시안 확인용: 각도에서 보기
+  controls.autoRotate = false;
+  camera.position.set(Math.sin(az) * d * Math.cos(el), 0.5 + d * Math.sin(el), Math.cos(az) * d * Math.cos(el));
+};
+window.__closeup = (p, az = 0.5, el = 0.2, d = 0.5) => {   // 시안 확인용: 한 점을 가까이서
+  controls.autoRotate = false;
+  controls.target.copy(p);
+  camera.position.set(p.x + Math.sin(az) * d * Math.cos(el), p.y + d * Math.sin(el), p.z + Math.cos(az) * d * Math.cos(el));
+};
+
+// 따뜻한 햇빛 + 부드러운 채움빛 (동물의 숲 느낌)
+const sun = new THREE.DirectionalLight(0xfff1dc, 2.2);
+sun.position.set(1.5, 3, 2);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.radius = 6;
+sun.shadow.camera.near = 0.5; sun.shadow.camera.far = 8;
+Object.assign(sun.shadow.camera, { left: -1.2, right: 1.2, top: 1.2, bottom: -1.2 });
+scene.add(sun);
+scene.add(new THREE.HemisphereLight(0xfff8ee, 0xcfe3c8, 0.6));
+const rim = new THREE.DirectionalLight(0xffffff, 1.2);   // 털 가장자리가 보송하게 빛나도록 뒤에서
+rim.position.set(-2, 1.5, -2.5);
+scene.add(rim);
+
+// 바닥: 그림자만 받는 둥근 잔디 판
+const ground = new THREE.Mesh(new THREE.CircleGeometry(1.4, 64), new THREE.ShadowMaterial({ opacity: 0.18 }));
+ground.rotation.x = -Math.PI / 2;
+ground.receiveShadow = true;
+scene.add(ground);
+const plate = new THREE.Mesh(new THREE.CylinderGeometry(0.85, 0.9, 0.06, 64),
+  new THREE.MeshStandardMaterial({ color: 0xbfd8a8, roughness: 1 }));
+plate.position.y = -0.031;
+plate.receiveShadow = true;
+scene.add(plate);
+
+const bird = new THREE.Group();       // 움직임용 (통통, 갸웃)
+const body = new THREE.Group();       // 모델 + 장신구
+bird.add(body);
+scene.add(bird);
+let modelHeight = 1;
+
+const loader = new GLTFLoader();
+loader.setMeshoptDecoder(MeshoptDecoder);
+// 모델별 자리값 (모델 키 1, 앞 +Z 기준). ?m=folded 로 예전 모델
+const MODELS = {
+  wings: {   // 날개를 편 모델: 평소엔 날개를 내려 접고, 신나면 활짝 파닥
+    url: "/models/kkachi_wings.glb", rotY: 0,
+    paint: { head: 0.7, tailBack: 0.25, tailBelow: 0.45, feet: 0.1, back: 0.42, backBelow: 0.72 },
+    rig: { neckY: 0.7, neckZ: 0, headStart: 0.7, headFull: 0.78, headX: 0.3, tailY: 0.3, tailBase: 0.3, feetY: 0.08, beakLen: 0.085,
+           wing: { x0: 0.27, x1: 0.36, yMin: 0.38, yMax: 0.9, zMax: 0.6, pivotX: 0.2, pivotY: 0.68, pivotZ: -0.06, foldY: 0.6 } },
+    // 접힘(실제 까치처럼): 깃털 면이 위를 보게 비틀고, 꼬리 쪽 사선(~25°)으로 내려, 끝이 등 가운데로 모이게
+    // (각도는 '끝은 뒤·아래 25°·약간 안쪽, 깃털 면은 위·바깥'이 되도록 계산으로 찾음)
+    // 끝은 등 가운데로 모이며 뒤·아래로, 깃털 면은 거의 위를 보게 → 날개가 등을 덮듯이 얹힌다
+    // 어깨에서 꼬리 쪽으로 대각선(약 40°)으로 내려가며, 꼬리 쪽으로 기울어진 등을 따라 붙게
+    // (끝: 뒤·아래 40°·안쪽 / 깃털 면: 위·바깥·뒤로 기울어짐 — 계산으로 찾은 각도)
+    anim: { beakOpen: 0.5, wingRoll: -0.8, wingOpen: -0.9, wingFlap: 0.95, wingSweep: 2.75, wingTuck: 1.7, wingScale: 0.75, stubScale: 0.25 },
+    longTail: true,
+    splitBeak: true,
+    fixes(geo) {
+      // 눈 사이(부리 위) 접힌 자국 펴기: 머리 앞쪽에서 가장 튀어나온 점(부리 끝) 기준
+      const pos = geo.attributes.position, v = new THREE.Vector3(), tip = new THREE.Vector3(0, 0, -9);
+      for (let i = 0; i < pos.count; i++) { v.fromBufferAttribute(pos, i); if (v.y > 0.55 && Math.abs(v.x) < 0.1 && v.z > tip.z) tip.copy(v); }
+      // 미간 넓게 + 여러 번. 부리(뿌리부터 끝까지)는 그대로 둬서 또렷하게
+      const beak = (p) => p.z > tip.z - 0.085 && Math.abs(p.y - tip.y) < 0.045 && Math.abs(p.x) < 0.06;
+      smoothArea(geo, new THREE.Vector3(0, tip.y + 0.05, tip.z - 0.06), 0.13, 120, beak);
+      // 원래 부리 자리 둘레는 얼굴과 같은 검정으로 (부리를 잘라낸 가장자리가 희끗하게 보이지 않게)
+      const col = geo.attributes.color, black = new THREE.Color(0x0d0c0f);
+      for (let i = 0; i < pos.count; i++) {
+        v.fromBufferAttribute(pos, i);
+        if (v.z > tip.z - 0.11 && Math.abs(v.y - tip.y) < 0.07 && Math.abs(v.x) < 0.085) col.setXYZ(i, black.r, black.g, black.b);
+      }
+      col.needsUpdate = true;
+      // 원래 부리 잘라내기 → 위·아래 두 조각 부리를 따로 붙인다 (진짜로 갈라지게)
+      M.rig.tip = tip.clone();
+      // 구멍을 내면 가장자리가 들쭉날쭉해서, 원래 부리를 얼굴 안으로 밀어 넣고 그 자리를 매끈하게 편다
+      const faceZ = tip.z - 0.085;
+      for (let i = 0; i < pos.count; i++) {
+        v.fromBufferAttribute(pos, i);
+        if (v.z > faceZ && Math.abs(v.y - tip.y) < 0.055 && Math.abs(v.x) < 0.07) pos.setZ(i, faceZ - (v.z - faceZ) * 0.15);
+      }
+      pos.needsUpdate = true;
+      smoothArea(geo, new THREE.Vector3(0, tip.y, faceZ), 0.075, 60);
+      geo.computeVertexNormals();
+      // 원래 짧은 꼬리 조각(발 뒤 바닥 쪽) 지우기 — 새 긴 꼬리가 대신한다
+      const n = removeArea(geo, (p) => p.y < 0.2 && p.z < -0.09 && Math.abs(p.x) < 0.13);
+      console.log("꼬리 조각 면", n, "개 지움");
+    },
+    legs: { feetTop: 0.09, legTop: 0.4, k: 0.35 },   // 다리가 길어서 1/3 쯤으로
+  },
+  folded: {
+    url: "/models/kkachi.glb", rotY: 0.54,
+    paint: { head: 0.66, tailBack: 0.35, tailBelow: 0.5, feet: 0.13 },
+    rig: { neckY: 0.62, neckZ: 0.02, headStart: 0.58, headFull: 0.68, tailY: 0.33, tailBase: 0.3, feetY: 0.12,
+           wing: { x0: 0.55, x1: 0.8, yMin: 0.3, yMax: 0.66, zMax: 0.15, pivotX: 0.55, pivotY: 0.6, pivotZ: -0.02 } },
+    anim: {},
+  },
+};
+const M = MODELS[new URLSearchParams(location.search).get("m")] || MODELS.wings;
+let rig = null, anim = null;
+loader.load(M.url, (gltf) => {
+  const model = gltf.scene;
+  model.rotation.y = M.rotY;
+  model.updateMatrixWorld(true);
+  model.traverse((o) => { if (o.isMesh) paintTwoTone(o, M.paint); });
+  const [part] = normalize(model, M.rotY);
+  // 실바니안 인형 같은 플로킹(벨벳) 털: 아주 거칠게 + 가장자리만 은은하게 빛나는 sheen
+  const material = new THREE.MeshPhysicalMaterial({
+    vertexColors: true, roughness: 1, metalness: 0, side: THREE.DoubleSide,   // 작은 구멍으로 뒤가 비치지 않게
+    sheen: 1, sheenRoughness: 0.5, sheenColor: new THREE.Color(0x4a4a50),
+  });
+  let cfg = M.rig;
+  if (M.legs) {
+    const mapY = shortenLegs(part.geometry, M.legs);
+    // 높이로 정한 뼈 자리값도 같이 옮긴다
+    cfg = { ...cfg, neckY: mapY(cfg.neckY), headStart: mapY(cfg.headStart), headFull: mapY(cfg.headFull),
+            tailY: mapY(cfg.tailY), feetY: mapY(cfg.feetY),
+            wing: { ...cfg.wing, yMin: mapY(cfg.wing.yMin), yMax: mapY(cfg.wing.yMax), pivotY: mapY(cfg.wing.pivotY),
+                    foldY: cfg.wing.foldY === undefined ? undefined : mapY(cfg.wing.foldY) } };
+    controls.target.y = 0.4;
+  }
+  if (M.fixes) M.fixes(part.geometry);
+  rig = buildRig(part.geometry, material, { ...cfg, tip: M.rig.tip });
+  rig.mesh.castShadow = true;
+  rig.mesh.frustumCulled = false;
+  body.add(rig.mesh);
+  anim = new Animator(rig, M.anim);
+  anim.onChirp = () => say(["짹!", "짹짹!", "까악~ 💕"][Math.floor(Math.random() * 3)], true);
+  addFace(rig);
+  if (M.splitBeak) addBeak(rig);
+  placeAccessories(rig);
+  if (M.longTail) addLongTail(rig, material);
+  window.__rig = rig; window.__anim = anim; window.__model = rig.mesh;
+  buildAccessories();
+});
+
+
+// ---- AI 텍스처는 조각이 잘게 나뉘어 경계에서 흰 점이 번진다 →
+// 텍스처로 '어디가 흰지'만 읽고, 이웃끼리 고르게 다듬어 검정/흰색 두 가지로 칠한다 ----
+function paintTwoTone(mesh, rule) {
+  const g = mesh.geometry, pos = g.attributes.position, uv = g.attributes.uv, idx = g.index;
+  // 밝기 읽기: 정리된 모델은 꼭짓점 색, 아니면 텍스처
+  let lumAt;
+  if (g.attributes.color) {
+    const col = g.attributes.color;
+    lumAt = (i) => 0.299 * col.getX(i) + 0.587 * col.getY(i) + 0.114 * col.getZ(i);
+  } else {
+    const W = 512, H = 512;   // 작게 줄여 읽으면 점 잡음도 같이 줄어든다
+    const cv = document.createElement("canvas"); cv.width = W; cv.height = H;
+    const cx = cv.getContext("2d"); cx.drawImage(mesh.material.map.image, 0, 0, W, H);
+    const px = cx.getImageData(0, 0, W, H).data;
+    lumAt = (i) => {
+      const x = Math.min(W - 1, Math.max(0, Math.floor(uv.getX(i) * W)));
+      const y = Math.min(H - 1, Math.max(0, Math.floor(uv.getY(i) * H)));
+      const o = (y * W + x) * 4;
+      return (0.299 * px[o] + 0.587 * px[o + 1] + 0.114 * px[o + 2]) / 255;
+    };
+  }
+  // 같은 자리에 겹친 꼭짓점(텍스처 조각 경계)을 하나로 묶는다
+  const key = new Map(), group = new Int32Array(pos.count);
+  let n = 0;
+  for (let i = 0; i < pos.count; i++) {
+    const k = `${Math.round(pos.getX(i) * 2e4)},${Math.round(pos.getY(i) * 2e4)},${Math.round(pos.getZ(i) * 2e4)}`;
+    let gId = key.get(k);
+    if (gId === undefined) { gId = n++; key.set(k, gId); }
+    group[i] = gId;
+  }
+  const sum = new Float32Array(n), cnt = new Float32Array(n);
+  for (let i = 0; i < pos.count; i++) { sum[group[i]] += lumAt(i); cnt[group[i]]++; }
+  let val = new Float32Array(n);
+  for (let j = 0; j < n; j++) val[j] = sum[j] / cnt[j];
+  // 이웃 목록
+  const nb = Array.from({ length: n }, () => []);
+  for (let t = 0; t < idx.count; t += 3) {
+    const a = group[idx.getX(t)], b = group[idx.getX(t + 1)], c = group[idx.getX(t + 2)];
+    nb[a].push(b, c); nb[b].push(a, c); nb[c].push(a, b);
+  }
+  // 고르게 다듬기 (작은 점은 사라지고 큰 흰 무늬는 남는다)
+  // 까치는 머리·꼬리·발이 늘 검정 → 그 자리의 흰 점은 잡음으로 보고 지운다 (높이는 0~1 로 맞춰서 본다)
+  const bb = new THREE.Box3().setFromBufferAttribute(pos).applyMatrix4(mesh.matrixWorld);
+  const hgt = bb.max.y - bb.min.y, wv = new THREE.Vector3(), zone = new Uint8Array(n);   // 0 보통, 1 검정, 2 발
+  for (let i = 0; i < pos.count; i++) {
+    wv.fromBufferAttribute(pos, i).applyMatrix4(mesh.matrixWorld);
+    const ny = (wv.y - bb.min.y) / hgt;
+    const z = group[i];
+    if (ny < rule.feet) zone[z] = 2;
+    else if (ny > rule.head || (wv.z < bb.min.z + rule.tailBack * (bb.max.z - bb.min.z) && ny < rule.tailBelow)) zone[z] = 1;
+    // 등(뒤쪽)은 검정 — 날개 사이로 흰 배가 비치지 않게. 어깨의 흰 무늬는 날개 쪽이라 남는다
+    else if (rule.back && Math.abs(wv.x) < 0.22 && wv.z < bb.min.z + rule.back * (bb.max.z - bb.min.z) && ny < rule.backBelow) zone[z] = 1;
+  }
+  for (let j = 0; j < n; j++) if (zone[j]) val[j] = 0;
+  for (let it = 0; it < 10; it++) {
+    const next = new Float32Array(n);
+    for (let j = 0; j < n; j++) {
+      let s2 = 0;
+      for (const k of nb[j]) s2 += val[k];
+      next[j] = nb[j].length ? 0.35 * val[j] + 0.65 * (s2 / nb[j].length) : val[j];
+    }
+    val = next;
+  }
+  smoothShape(g, group, n, nb);
+  const black = new THREE.Color(0x0d0c0f), white = new THREE.Color(0xf4f0e8), feet = new THREE.Color(0x34333a);
+  const colors = new Float32Array(pos.count * 3), c = new THREE.Color(), v = new THREE.Vector3();
+  for (let i = 0; i < pos.count; i++) {
+    const z = group[i];
+    const w = zone[z] ? 0 : THREE.MathUtils.smoothstep(val[z], 0.45, 0.6);
+    c.copy(zone[z] === 2 ? feet : black).lerp(white, w);
+    colors.set([c.r, c.g, c.b], i * 3);
+  }
+  g.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+}
+
+// AI 가 털을 표현하려고 만든 잔 울퉁불퉁이 빛을 받아 흰 점처럼 보인다 →
+// 모양은 지키면서 잔물결만 펴는 방식(타우빈 스무딩)으로 다듬고, 조각 경계 없이 매끈한 법선을 다시 만든다
+function smoothShape(g, group, n, nb) {
+  const pos = g.attributes.position, idx = g.index;
+  let P = new Float32Array(n * 3), seen = new Uint8Array(n);
+  for (let i = 0; i < pos.count; i++) {
+    const j = group[i];
+    if (seen[j]) continue;
+    seen[j] = 1;
+    P[j * 3] = pos.getX(i); P[j * 3 + 1] = pos.getY(i); P[j * 3 + 2] = pos.getZ(i);
+  }
+  const step = (factor) => {
+    const Q = new Float32Array(P);
+    for (let j = 0; j < n; j++) {
+      const list = nb[j];
+      if (!list.length) continue;
+      let x = 0, y = 0, z = 0;
+      for (const k of list) { x += P[k * 3]; y += P[k * 3 + 1]; z += P[k * 3 + 2]; }
+      const m = list.length;
+      Q[j * 3] += factor * (x / m - P[j * 3]);
+      Q[j * 3 + 1] += factor * (y / m - P[j * 3 + 1]);
+      Q[j * 3 + 2] += factor * (z / m - P[j * 3 + 2]);
+    }
+    P = Q;
+  };
+  for (let it = 0; it < 8; it++) { step(0.5); step(-0.53); }
+  for (let i = 0; i < pos.count; i++) pos.setXYZ(i, P[group[i] * 3], P[group[i] * 3 + 1], P[group[i] * 3 + 2]);
+  // 법선: 겹친 꼭짓점끼리 같은 값 (조각 경계 자국 없이)
+  const N = new Float32Array(n * 3), a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3(), f = new THREE.Vector3();
+  for (let t = 0; t < idx.count; t += 3) {
+    const ia = idx.getX(t), ib = idx.getX(t + 1), ic = idx.getX(t + 2);
+    a.fromBufferAttribute(pos, ia); b.fromBufferAttribute(pos, ib); c.fromBufferAttribute(pos, ic);
+    f.subVectors(c, b).cross(a.clone().sub(b));
+    for (const v of [ia, ib, ic]) { const j = group[v]; N[j * 3] += f.x; N[j * 3 + 1] += f.y; N[j * 3 + 2] += f.z; }
+  }
+  if (!g.attributes.normal) g.setAttribute("normal", new THREE.BufferAttribute(new Float32Array(pos.count * 3), 3));
+  const nrm = g.attributes.normal;
+  for (let i = 0; i < pos.count; i++) {
+    const j = group[i];
+    f.set(N[j * 3], N[j * 3 + 1], N[j * 3 + 2]).normalize();
+    nrm.setXYZ(i, f.x, f.y, f.z);
+  }
+  pos.needsUpdate = nrm.needsUpdate = true;
+  g.computeBoundingBox(); g.computeBoundingSphere();
+}
+
+// ---- 눈(반짝이는 구슬 + 깜빡임 + 신날 때 ^^) 과 입 안쪽 ----
+// 정리 과정에서 검은 털 위의 검은 눈이 뭉개져서, 눈을 따로 만들어 머리 뼈에 붙인다
+const face = { eyes: [], happy: [], mouth: null, blinkNext: 2, blinkT: -1 };
+function addFace(rig) {
+  const ray = new THREE.Raycaster();
+  rig.mesh.updateMatrixWorld(true);
+  const head = rig.bones.head, toHead = (p) => p.clone().sub(rig.at.head);
+  const bead = new THREE.MeshPhysicalMaterial({ color: 0x050505, roughness: 0.12, clearcoat: 1, clearcoatRoughness: 0.05 });
+  const shine = new THREE.MeshBasicMaterial({ color: 0xffffff });
+  const lineMat = new THREE.MeshPhysicalMaterial({ color: 0x050505, roughness: 0.3 });
+  for (const side of [-1, 1]) {
+    ray.set(new THREE.Vector3(side * 0.085, rig.tip.y + 0.045, 2), new THREE.Vector3(0, 0, -1));
+    const hit = ray.intersectObject(rig.mesh, false)[0];
+    if (!hit) continue;
+    const at = hit.point.clone().add(new THREE.Vector3(0, 0, -0.012));
+    const eye = new THREE.Group();
+    const ball = new THREE.Mesh(new THREE.SphereGeometry(0.03, 24, 16), bead);
+    ball.scale.set(1, 1.1, 0.7);
+    eye.add(ball);
+    const hl = new THREE.Mesh(new THREE.SphereGeometry(0.008, 12, 8), shine);
+    hl.position.set(side * 0.008 + 0.006, 0.013, 0.02);
+    eye.add(hl);
+    eye.position.copy(toHead(at));
+    eye.rotation.y = side * 0.35;
+    head.add(eye);
+    face.eyes.push(eye);
+    // ^^ 눈 (평소엔 숨김)
+    const arc = new THREE.Mesh(new THREE.TorusGeometry(0.022, 0.006, 8, 20, Math.PI), lineMat);
+    arc.position.copy(toHead(at)).add(new THREE.Vector3(0, -0.005, 0.012));
+    arc.rotation.y = side * 0.35;
+    arc.visible = false;
+    head.add(arc);
+    face.happy.push(arc);
+  }
+  // 입 안쪽: 부리 뿌리 안쪽에 숨겨 두었다가 부리가 벌어지면 보인다
+  const mouth = new THREE.Mesh(new THREE.SphereGeometry(0.03, 16, 12), new THREE.MeshStandardMaterial({ color: 0x8a2b3a, roughness: 0.6 }));
+  mouth.scale.set(0.75, 0.3, 1.1);
+  mouth.position.copy(toHead(rig.at.jaw.clone().add(new THREE.Vector3(0, 0.002, 0.018))));
+  if (!M.splitBeak) head.add(mouth);
+  face.mouth = mouth;
+}
+
+// 위·아래 두 조각 부리. 윗부리는 머리에, 아랫부리는 턱 뼈에 붙어서 아랫부리만 벌어진다.
+// 맞닿는 안쪽 면은 진분홍 입 안이라 벌어지면 보인다.
+function beakHalf(len, rx, ry, upper) {
+  const rings = 18, segs = 20, outer = [], inner = [];
+  const back = 8;   // 뿌리를 얼굴 속으로 더 깊이 (s<0) 묻어서, 부리가 얼굴에서 자라난 것처럼
+  const ringAt = (s) => {
+    const r = s < 0 ? 1 + s * 0.25 : Math.pow(1 - s, 0.8);   // 끝으로 갈수록 가늘게
+    const hook = upper ? -0.35 * ry * s ** 3 : 0;    // 윗부리 끝은 살짝 아래로 굽는다
+    return { r, hook };
+  };
+  const pos = [], idx = [], cols = [];
+  const gray = new THREE.Color(0x34333a), black = new THREE.Color(0x0d0c0f), c = new THREE.Color();
+  for (let i = -back; i <= rings; i++) {
+    const s = i / rings, { r, hook } = ringAt(s);
+    c.copy(gray);   // 경계는 얼굴과 만나는 선 그대로 또렷하게
+    for (let j = 0; j <= segs; j++) {
+      // 윗부리는 양옆이 살짝 아래로 내려와 아랫부리를 덮고(닫혔을 때 입 안이 안 보이게), 아랫부리는 조금 좁게
+      const th = upper ? -0.14 + (Math.PI + 0.28) * j / segs : Math.PI + 0.1 + (Math.PI - 0.2) * j / segs;
+      const k = upper ? 1 : 0.92;
+      pos.push(rx * k * r * Math.cos(th), (upper ? ry : ry * 0.7) * r * Math.sin(th) + hook, s * len);
+      cols.push(c.r, c.g, c.b);
+    }
+  }
+  for (let i = 0; i < rings + back; i++) for (let j = 0; j < segs; j++) {
+    const a = i * (segs + 1) + j, b = a + segs + 1;
+    if (upper) idx.push(a, a + 1, b, b, a + 1, b + 1); else idx.push(a, b, a + 1, b, b + 1, a + 1);   // 바깥을 보게
+  }
+  const shell = new THREE.BufferGeometry();
+  shell.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+  shell.setAttribute("color", new THREE.Float32BufferAttribute(cols, 3));
+  shell.setIndex(idx);
+  shell.computeVertexNormals();
+  // 맞닿는 면 (입 안)
+  const ip = [], ii = [];
+  for (let i = 0; i <= rings; i++) {
+    const s = i / rings, { r, hook } = ringAt(s);
+    const y = upper ? hook : -0.004, w = upper ? rx * 0.98 : rx * 0.9;   // 아랫부리 안쪽은 살짝 아래로 숨김
+    ip.push(-w * r, y, s * len, w * r, y, s * len);
+  }
+  for (let i = 0; i < rings; i++) {
+    const a = i * 2;
+    if (upper) ii.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); else ii.push(a, a + 2, a + 1, a + 1, a + 2, a + 3);
+  }
+  const lip = new THREE.BufferGeometry();
+  lip.setAttribute("position", new THREE.Float32BufferAttribute(ip, 3));
+  lip.setIndex(ii);
+  lip.computeVertexNormals();
+  return { shell, lip };
+}
+
+function addBeak(rig) {
+  const tip = rig.tip, len = 0.1, base = new THREE.Vector3(0, tip.y, tip.z - len + 0.005);
+  const gray = new THREE.MeshPhysicalMaterial({ vertexColors: true, roughness: 0.6, sheen: 0.5, sheenColor: new THREE.Color(0x55545c) });
+  const inside = new THREE.MeshStandardMaterial({ color: 0x6a1c2c, roughness: 0.7, side: THREE.DoubleSide });
+  const make = (upper, bone, at) => {
+    const { shell, lip } = beakHalf(upper ? len : len * 0.86, 0.052, 0.042, upper);
+    const g = new THREE.Group();
+    const m1 = new THREE.Mesh(shell, gray), m2 = new THREE.Mesh(lip, inside);
+    m1.castShadow = true;
+    g.add(m1, m2);
+    g.position.copy(base).sub(at);
+    bone.add(g);
+    return g;
+  };
+  face.beak = { upper: make(true, rig.bones.head, rig.at.head), lower: make(false, rig.bones.jaw, rig.at.jaw) };
+  // 혀: 아랫부리 안에 눕힌 가늘고 끝이 뾰족한 분홍 혀. 입을 벌리면 끝이 살짝 들린다
+  const tg = new THREE.SphereGeometry(1, 28, 14);
+  const tp = tg.attributes.position;
+  for (let i = 0; i < tp.count; i++) {
+    const z = tp.getZ(i), u = (z + 1) / 2;                       // 0 = 뿌리, 1 = 끝
+    const w = 1 - 0.75 * u ** 1.6;                                 // 끝으로 갈수록 뾰족하게
+    const y = tp.getY(i);
+    tp.setX(i, tp.getX(i) * w);
+    tp.setY(i, (y > 0 ? y : y * 0.4) * (1 - 0.5 * u) - 0.25 * Math.abs(tp.getX(i)) * (y > 0 ? 1 : 0));   // 위는 볼록, 가운데 살짝 홈
+  }
+  tg.computeVertexNormals();
+  const tongue = new THREE.Mesh(tg, new THREE.MeshPhysicalMaterial({ color: 0xf28a9e, roughness: 0.35, clearcoat: 0.5, clearcoatRoughness: 0.3 }));
+  tongue.scale.set(0.016, 0.009, 0.03);
+  tongue.position.set(0, 0.001, 0.03);
+  const tongueRoot = new THREE.Group();
+  tongueRoot.position.set(0, -0.002, 0.012);
+  tongueRoot.add(tongue);
+  face.beak.lower.add(tongueRoot);
+  face.beak.tongue = tongueRoot;
+}
+
+// 실제 까치처럼 긴 꼬리: 몸길이보다 길고 끝이 둥근 납작한 꼬리깃을 엉덩이에서 뒤·아래 사선으로
+function addLongTail(rig, bodyMaterial) {
+  const L = 0.66, base = 0.05, mid = 0.095;   // 뿌리 0.08 은 몸 속에 묻힌다   // 길이, 뿌리 폭(반), 가장 넓은 곳 폭(반)
+  const shape = new THREE.Shape();
+  shape.moveTo(-base, 0);
+  shape.bezierCurveTo(-mid, L * 0.35, -mid * 1.05, L * 0.75, -mid * 0.75, L * 0.93);
+  shape.quadraticCurveTo(0, L * 1.04, mid * 0.75, L * 0.93);
+  shape.bezierCurveTo(mid * 1.05, L * 0.75, mid, L * 0.35, base, 0);
+  shape.lineTo(-base, 0);
+  // 깃이 여러 겹 쌓인 두께감 (뿌리 쪽이 더 두껍게 아래에서 다시 줄인다)
+  const geo = new THREE.ExtrudeGeometry(shape, { depth: 0.04, bevelEnabled: true, bevelThickness: 0.02, bevelSize: 0.015, bevelSegments: 5, curveSegments: 24 });
+  geo.translate(0, 0, -0.02);
+  // 가운데 깃이 살짝 도드라지게(가운데 볼록) + 끝으로 갈수록 살짝 아래로 휘게
+  const p = geo.attributes.position;
+  for (let i = 0; i < p.count; i++) {
+    const x = p.getX(i), y = p.getY(i), z = p.getZ(i);
+    const thin = 1 - 0.55 * Math.min(1, y / L);   // 끝으로 갈수록 얇게
+    p.setZ(i, z * thin + 0.012 * Math.cos(Math.min(1, Math.abs(x) / mid) * Math.PI / 2) - 0.04 * (y / L) ** 2);
+  }
+  geo.computeVertexNormals();
+  const mat = new THREE.MeshPhysicalMaterial({ color: 0x0d0c0f, roughness: 1, sheen: 1, sheenRoughness: 0.5, sheenColor: new THREE.Color(0x4a4a50), side: THREE.DoubleSide });
+  const tail = new THREE.Mesh(geo, mat);
+  tail.castShadow = true;
+  // 모양은 +Y 로 뻗어 있다 → 뒤(-Z)로 눕히고 30° 아래로
+  const holder = new THREE.Group();
+  holder.add(tail);
+  tail.rotation.x = -Math.PI / 2 - 0.3;   // 뒤로 눕히고 약 17° 아래로
+  const bb = rig.mesh.geometry.boundingBox;
+  // 뿌리를 엉덩이 속 깊이 꽂아서 몸과 꼬리 사이가 뜨지 않게
+  const rump = new THREE.Vector3(0, rig.at.tail.y + 0.15, bb.min.z + 0.17);
+  holder.position.copy(rump).sub(rig.at.body);
+  rig.bones.body.add(holder);
+  // 꼬리 덮깃: 엉덩이와 꼬리 뿌리를 감싸는 털 뭉치 (꼬리와 같이 까딱인다)
+  const covert = new THREE.Mesh(new THREE.SphereGeometry(1, 32, 20), mat);
+  covert.scale.set(0.08, 0.045, 0.13);
+  covert.rotation.x = -0.3;
+  covert.position.set(0, -0.03, -0.09);
+  covert.castShadow = true;
+  holder.add(covert);
+  anim.tailMesh = holder;
+}
+
+// 장신구 자리를 모델에서 직접 잰다: 머리 꼭대기(위에서 쏜 광선), 눈 사이, 목 높이
+function placeAccessories(rig) {
+  const ray = new THREE.Raycaster();
+  const top = (x, z) => {
+    ray.set(new THREE.Vector3(x, 3, z), new THREE.Vector3(0, -1, 0));
+    return ray.intersectObject(rig.mesh, false)[0]?.point;
+  };
+  const crown = top(0.07, 0.02) || new THREE.Vector3(0.07, 0.97, 0.02);
+  A.head.copy(crown).add(new THREE.Vector3(0, 0.01, 0));
+  const side = top(0.13, 0.04) || crown;
+  A.side.copy(side).add(new THREE.Vector3(0.015, 0, 0.02));
+  if (face.eyes.length === 2) {
+    const mid = face.eyes[0].position.clone().add(face.eyes[1].position).multiplyScalar(0.5).add(rig.at.head);
+    A.face.copy(mid).add(new THREE.Vector3(0, 0, 0.035));
+  }
+  A.neck.set(0, rig.at.head.y + 0.005, rig.at.head.z);
+}
+
+function updateFace(dt) {
+  if (!anim) return;
+  updateFaceOf(face, anim, dt);
+  babies.forEach((bb) => updateFaceOf(bb.face, bb.anim, dt));
+}
+function updateFaceOf(face, anim, dt) {
+  const t = anim.t;
+  // 쓰다듬거나 알을 품으면 눈을 ^^ (알 낳느라 끙끙할 때도 질끈)
+  const happy = anim.level("happy") >= 0 || anim.level("peck") >= 0 || anim.pet.amt > 0.4 || anim.sit.amt > 0.5 || (anim.strain ?? 0) > 0.3;
+  // 깜빡임: 3~6초마다 0.16초
+  if (t > face.blinkNext) { face.blinkT = 0; face.blinkNext = t + 3 + Math.random() * 3; }
+  let open = 1;
+  if (face.blinkT >= 0) {
+    face.blinkT += dt;
+    const k = face.blinkT / 0.16;
+    open = k < 1 ? Math.abs(1 - 2 * k) * 0.9 + 0.1 : 1;
+    if (k >= 1) face.blinkT = -1;
+  }
+  face.eyes.forEach((e) => { e.visible = !happy; e.scale.y = open; });
+  face.happy.forEach((a) => { a.visible = happy; });
+  // 혀: 부리를 벌린 만큼 끝을 들고 살짝 꼼지락
+  if (face.beak?.tongue) {
+    const gape = anim.b.jaw.rotation.x;
+    face.beak.tongue.rotation.x = -gape * 0.45 - (gape > 0.05 ? Math.sin(t * 30) * 0.06 : 0);
+  }
+}
+
+// ---- 장신구 (동글동글한 장난감 스타일) ----
+const acc = {};
+const soft = (color) => new THREE.MeshPhysicalMaterial({ color, roughness: 0.6, sheen: 0.6, sheenColor: new THREE.Color(0xffffff) });
+const shiny = (color) => new THREE.MeshPhysicalMaterial({ color, roughness: 0.25, clearcoat: 0.6 });
+const A = window.ACC = {   // 자리 (모델 좌표). 화면에서 보며 맞춘다
+  head: new THREE.Vector3(0.0, 0.93, 0.02), face: new THREE.Vector3(0.0, 0.74, 0.2),
+  neck: new THREE.Vector3(0.0, 0.58, 0.0), side: new THREE.Vector3(0.14, 0.88, 0.06),
+};
+
+function shadowAll(g) { g.traverse((o) => { if (o.isMesh) o.castShadow = true; }); return g; }
+
+function buildAccessories() {
+  // 리본: 양쪽 고리 + 매듭
+  const ribbon = new THREE.Group();
+  const pink = soft(0xf28fb0);
+  for (const side of [-1, 1]) {
+    const loop = new THREE.Mesh(new THREE.SphereGeometry(0.075, 24, 16), pink);
+    loop.scale.set(1.25, 0.8, 0.45);
+    loop.position.set(side * 0.08, 0, 0);
+    loop.rotation.z = side * 0.35;
+    ribbon.add(loop);
+  }
+  ribbon.add(new THREE.Mesh(new THREE.SphereGeometry(0.038, 20, 14), pink));
+  ribbon.position.copy(A.head);
+  ribbon.scale.setScalar(0.75);
+  acc.ribbon = shadowAll(ribbon);
+
+  // 동그란 안경
+  const glasses = new THREE.Group();
+  const frame = shiny(0xc98a3c);
+  for (const side of [-1, 1]) {
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(0.055, 0.009, 12, 40), frame);
+    ring.position.set(side * 0.07, 0, 0);
+    glasses.add(ring);
+    const lens = new THREE.Mesh(new THREE.CircleGeometry(0.052, 32),
+      new THREE.MeshPhysicalMaterial({ color: 0xffffff, transmission: 0.9, roughness: 0.05, transparent: true, opacity: 0.25 }));
+    lens.position.set(side * 0.07, 0, 0);
+    glasses.add(lens);
+  }
+  const bridge = new THREE.Mesh(new THREE.TorusGeometry(0.02, 0.007, 8, 20, Math.PI), frame);
+  bridge.position.y = 0.005;
+  glasses.add(bridge);
+  glasses.position.copy(A.face);
+  acc.glasses = shadowAll(glasses);
+
+  // 고려대 크림슨 목도리: 목에 감는 고리 + 늘어진 끝
+  const scarf = new THREE.Group();
+  // 고려대 크림슨: 하얀 sheen 이 섞이면 분홍으로 보여서 같은 계열 sheen 으로
+  const crimson = new THREE.MeshPhysicalMaterial({ color: 0x7a0c22, roughness: 0.85, sheen: 1, sheenColor: new THREE.Color(0xb3263f), sheenRoughness: 0.5 });
+  const wrap = new THREE.Mesh(new THREE.TorusGeometry(0.15, 0.045, 16, 48), crimson);
+  wrap.rotation.x = Math.PI / 2;
+  wrap.scale.set(1, 1.05, 0.9);
+  scarf.add(wrap);
+  const tail = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.2, 0.035, 2, 4, 2), crimson);
+  tail.position.set(0.07, -0.1, 0.15);
+  tail.rotation.z = 0.15;
+  scarf.add(tail);
+  for (let i = 0; i < 4; i++) {   // 술
+    const fr = new THREE.Mesh(new THREE.CylinderGeometry(0.006, 0.006, 0.04, 6), crimson);
+    fr.position.set(0.04 + i * 0.02, -0.22, 0.15);
+    scarf.add(fr);
+  }
+  scarf.position.copy(A.neck);
+  acc.scarf = shadowAll(scarf);
+
+  // 꽃핀
+  const flower = new THREE.Group();
+  for (let i = 0; i < 5; i++) {
+    const p = new THREE.Mesh(new THREE.SphereGeometry(0.03, 16, 12), soft(0xffd1dc));
+    const a = (i / 5) * Math.PI * 2;
+    p.position.set(Math.cos(a) * 0.035, Math.sin(a) * 0.035, 0);
+    p.scale.set(1, 1, 0.5);
+    flower.add(p);
+  }
+  flower.add(new THREE.Mesh(new THREE.SphereGeometry(0.022, 16, 12), soft(0xffd45c)));
+  flower.position.copy(A.side);
+  flower.rotation.y = 0.9;
+  acc.flower = shadowAll(flower);
+
+  // 하트 목걸이: 얇은 줄 + 하트
+  const necklace = new THREE.Group();
+  const gold = shiny(0xe8c06a);
+  const chain = new THREE.Mesh(new THREE.TorusGeometry(0.19, 0.006, 8, 64), gold);
+  chain.rotation.x = Math.PI / 2 + 0.25;
+  necklace.add(chain);
+  const heartShape = new THREE.Shape();
+  heartShape.moveTo(0, -0.03);
+  heartShape.bezierCurveTo(-0.06, 0.01, -0.03, 0.05, 0, 0.025);
+  heartShape.bezierCurveTo(0.03, 0.05, 0.06, 0.01, 0, -0.03);
+  const heart = new THREE.Mesh(new THREE.ExtrudeGeometry(heartShape, { depth: 0.015, bevelEnabled: true, bevelSize: 0.006, bevelThickness: 0.006, bevelSegments: 3 }), shiny(0xff5c7a));
+  heart.position.set(0, -0.06, 0.2);
+  necklace.add(heart);
+  necklace.position.copy(A.neck).add(new THREE.Vector3(0, -0.04, 0));
+  acc.necklace = shadowAll(necklace);
+}
+
+const ACC_BONE = { ribbon: "head", glasses: "head", flower: "head", scarf: "body", necklace: "body" };
+function toggle(name) {
+  const g = acc[name];
+  if (!g || !rig) return false;
+  if (g.parent) { g.parent.remove(g); return false; }
+  const bone = rig.bones[ACC_BONE[name]];
+  if (!g.userData.home) g.userData.home = g.position.clone();
+  g.position.copy(g.userData.home).sub(rig.at[ACC_BONE[name]]);   // 뼈 기준 자리로
+  bone.add(g);
+  return true;
+}
+
+// ---- 먹이 주기: 날아오는 간식 → 콕콕 쪼기 → 하트 ----
+const bubble = document.getElementById("bubble"), hintEl = document.getElementById("hint");
+function say(text, minor = false) {
+  // 혼잣말 짹짹(minor)은 중요한 말(먹이·알·유치원 등)이 떠 있는 동안엔 덮어쓰지 않는다
+  if (minor && performance.now() < (say.keep ?? 0)) return;
+  if (!minor) say.keep = performance.now() + 2200;
+  bubble.textContent = text;
+  bubble.classList.add("show");
+  clearTimeout(say.t);
+  say.t = setTimeout(() => bubble.classList.remove("show"), 2200);
+}
+function hearts(n = 5) {
+  for (let i = 0; i < n; i++) {
+    const h = document.createElement("div");
+    h.className = "heart";
+    h.textContent = ["💕", "💗", "✨"][i % 3];
+    h.style.left = `${innerWidth / 2 - 60 + Math.random() * 120}px`;
+    h.style.top = `${innerHeight * 0.42 + Math.random() * 40}px`;
+    h.style.animationDelay = `${i * 0.12}s`;
+    document.body.appendChild(h);
+    setTimeout(() => h.remove(), 2000);
+  }
+}
+
+const FOODS = {
+  worm: { emoji: "🪱", line: "냠냠! 지렁이 젤리 최고예요" },
+  cake: { emoji: "🍰", line: "케이크다!! 7일 연속 대단해요" },
+};
+// 먹이: 바닥 아무 데나 톡 떨어지면 → 까치가 걸어가서(가끔 콩콩) 숙여서 콕콕 먹는다
+const REACH = 0.23;   // 숙였을 때 부리 끝이 몸 가운데에서 앞으로 닿는 거리 (시안에서 잰 값)
+function makeFood(kind) {
+  const g = new THREE.Group();
+  const gummy = (c) => new THREE.MeshPhysicalMaterial({ color: c, roughness: 0.25, clearcoat: 1, clearcoatRoughness: 0.15, sheen: 0.3 });
+  if (kind === "worm") {   // 꼬불꼬불 지렁이 젤리 (분홍 + 연두 두 줄)
+    const pts = [];
+    for (let i = 0; i <= 8; i++) pts.push(new THREE.Vector3((i / 8 - 0.5) * 0.13, 0.012, Math.sin(i * 1.2) * 0.02));
+    const curve = new THREE.CatmullRomCurve3(pts);
+    const body = new THREE.Mesh(new THREE.TubeGeometry(curve, 48, 0.011, 12), gummy(0xff7aa8));
+    const stripe = new THREE.Mesh(new THREE.TubeGeometry(curve, 48, 0.0085, 12), gummy(0x9be070));
+    stripe.position.y = 0.006; stripe.scale.set(1, 1, 1);
+    const capA = new THREE.Mesh(new THREE.SphereGeometry(0.011, 12, 8), gummy(0xff7aa8)); capA.position.copy(pts[0]);
+    const capB = capA.clone(); capB.position.copy(pts[8]);
+    g.add(body, stripe, capA, capB);
+  } else {                 // 딸기 케이크 한 조각
+    const sponge = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 0.04, 32, 1, false, 0, Math.PI * 1.6),
+      new THREE.MeshStandardMaterial({ color: 0xf3d9a8, roughness: 0.9 }));
+    sponge.position.y = 0.02;
+    const cream = new THREE.Mesh(new THREE.CylinderGeometry(0.047, 0.047, 0.012, 32, 1, false, 0, Math.PI * 1.6),
+      new THREE.MeshStandardMaterial({ color: 0xfffaf2, roughness: 0.6 }));
+    cream.position.y = 0.045;
+    const berry = new THREE.Mesh(new THREE.SphereGeometry(0.014, 16, 12), gummy(0xe0334a));
+    berry.scale.y = 1.2; berry.position.set(0.012, 0.062, 0.01);
+    g.add(sponge, cream, berry);
+  }
+  g.traverse((o) => { if (o.isMesh) o.castShadow = true; });
+  g.scale.setScalar(1.6);   // 까치 옆에서 잘 보이게
+  const holder = new THREE.Group();   // 먹으면서 줄어드는 건 바깥 그룹으로
+  holder.add(g);
+  return holder;
+}
+// 던지기 (포켓몬고처럼): 먹이 버튼 → 화면 아래에 먹이를 들고 → 위로 휙 밀어서 던진다
+//   세게 밀수록 멀리, 옆으로 비스듬히 밀면 그쪽으로. 약하게 밀면 다시 손으로 돌아온다
+// food.state: held(들고 있음) → flying(날아감) → rolling(굴러서 멈춤) → eating(먹는 중)
+let food = null;
+window.__food = () => food;   // 시안 확인용
+const GRAV = 7;                 // 살짝 둥실둥실 날아가게 (실제 중력보다 약하게)
+const FLOOR = { rx: 0.6, rz: 0.45 };
+const handPos = () => camera.localToWorld(new THREE.Vector3(0, -0.2, -1.1));
+const HELD_SCALE = 0.5;   // 눈앞에 들고 있을 땐 작게 (멀리 날아가면서 제 크기로)
+const drag = { on: false, pts: [] };   // 최근 손가락 위치들 [x, y, 시각]
+function feed(kind) {
+  if (!anim) return;
+  if (food?.state === "held") { scene.remove(food.m); food = null; setAim(false); return; }   // 다시 누르면 내려놓기
+  if (food) return;   // 하나씩
+  const m = makeFood(kind);
+  scene.add(m);
+  food = { m, kind, line: FOODS[kind].line, state: "held", v: new THREE.Vector3(), hold: new THREE.Vector3(), t: 0 };
+  setAim(true);
+}
+function setAim(on) {
+  controls.enabled = !on;
+  if (on) controls.autoRotate = false;
+  hintEl.textContent = on ? "먹이를 위로 휙 밀어서 던져요 (버튼을 다시 누르면 내려놓기)"
+                          : play.on ? PLAY_HINT : VIEW_HINT;
+}
+renderer.domElement.addEventListener("pointerdown", (e) => {
+  if (food?.state !== "held") return;
+  e.stopImmediatePropagation();   // 쓰다듬기·돌려보기 대신 던지기
+  drag.on = true; drag.pts = [[e.clientX, e.clientY, performance.now()]];
+  try { renderer.domElement.setPointerCapture(e.pointerId); } catch {}
+}, { capture: true });
+renderer.domElement.addEventListener("pointermove", (e) => {
+  if (!drag.on) return;
+  drag.pts.push([e.clientX, e.clientY, performance.now()]);
+  if (drag.pts.length > 12) drag.pts.shift();
+  // 들고 있는 먹이가 손가락을 따라 조금 움직인다
+  const [x0, y0] = drag.pts[0], k = 1.1 / innerHeight * 0.6;
+  food.hold.set((e.clientX - x0) * k, -(e.clientY - y0) * k, 0);
+}, { capture: true });
+function throwEnd(e) {
+  if (!drag.on) return;
+  drag.on = false;
+  const now = performance.now();
+  // 마지막 0.1초 동안의 손가락 빠르기 (화면 px/초)
+  const recent = drag.pts.filter((p) => now - p[2] < 100);
+  const first = recent[0] ?? drag.pts[0], last = [e.clientX, e.clientY, now];
+  const dt = Math.max(16, last[2] - first[2]) / 1000;
+  const vx = (last[0] - first[0]) / dt, vy = -(last[1] - first[1]) / dt;   // 위로 밀면 +
+  food.hold.set(0, 0, 0);
+  if (vy < 350) return;   // 약하면 다시 손으로
+  const power = THREE.MathUtils.clamp(vy / 2000, 0.3, 1.3);
+  const fwd = new THREE.Vector3(); camera.getWorldDirection(fwd); fwd.y = 0; fwd.normalize();
+  const right = new THREE.Vector3(-fwd.z, 0, fwd.x);
+  const side = THREE.MathUtils.clamp(vx / vy, -1, 1);
+  food.v.copy(fwd).addScaledVector(right, side * 0.6).normalize().multiplyScalar(0.6 + 2.1 * power);   // 보통 세기면 까치 근처에 떨어지게 맞춘 값
+  food.v.y = 0.6 + 0.8 * power;
+  food.state = "flying";
+  food.spin = (Math.random() - 0.5) * 12;
+  setAim(false);
+  anim.walk = null;
+  say(pick(["어? 뭐야뭐야", "먹이다!", "냄새 좋다~"]));
+}
+renderer.domElement.addEventListener("pointerup", throwEnd, { capture: true });
+renderer.domElement.addEventListener("pointercancel", throwEnd, { capture: true });
+
+function updateFood(dt) {
+  if (!food) return;
+  anim.strollNext = Math.max(anim.strollNext, anim.t + 3);   // 먹이가 있는 동안엔 혼자 산책·땅 콕콕 안 함
+  const m = food.m;
+  food.t += dt;
+  if (food.state === "held") {   // 손에 들고 둥실둥실
+    m.position.copy(handPos()).add(food.hold.clone().applyQuaternion(camera.quaternion));
+    m.position.y += Math.sin(food.t * 3) * 0.008;
+    m.rotation.y += dt * 0.8;
+    m.scale.setScalar(HELD_SCALE);
+    return;
+  }
+  if (food.state === "flying") {
+    food.v.y -= GRAV * dt;
+    m.position.addScaledVector(food.v, dt);
+    m.rotation.x += food.spin * dt;
+    m.scale.setScalar(Math.min(1, m.scale.x + dt * 2));
+    // 까치가 날아오는 먹이를 눈으로 따라간다
+    const P = anim.pos;
+    anim.look.target = THREE.MathUtils.clamp(Math.atan2(m.position.x - P.x, m.position.z - P.z) - P.yaw, -1, 1);
+    anim.look.next = anim.t + 1;
+    if (m.position.y <= 0) {   // 바닥에 닿으면 통 튀고 미끄러지다 멈춘다
+      m.position.y = 0;
+      food.v.y *= -0.35; food.v.x *= 0.55; food.v.z *= 0.55; food.spin *= 0.4;
+      if (food.v.y < 0.25) { food.v.y = 0; food.state = "rolling"; m.rotation.x = 0; }
+    }
+    if (m.position.y < -2) { scene.remove(m); food = null; }
+    return;
+  }
+  if (food.state === "rolling") {
+    m.position.addScaledVector(food.v, dt);
+    food.v.multiplyScalar(Math.max(0, 1 - dt * 6));
+    // 바닥 밖으로 가면 안쪽 가장자리로 데굴데굴 돌아온다
+    const k = Math.hypot(m.position.x / FLOOR.rx, m.position.z / FLOOR.rz);
+    if (k > 1) { m.position.x += (m.position.x / k - m.position.x) * Math.min(1, dt * 5); m.position.z += (m.position.z / k - m.position.z) * Math.min(1, dt * 5); }
+    if (food.v.length() < 0.03 && k <= 1.02) {
+      food.state = "waiting";
+      // 떨어진 곳에서 가장 가까운 새가 먹는다 (엄마 또는 집에 있는 아기)
+      const eaters = [{ a: anim, s: 1, bb: null }, ...babies.filter((b) => b.state === "home").map((b) => ({ a: b.anim, s: b.scale, bb: b }))];
+      const dist = (e) => Math.hypot(m.position.x - e.a.pos.x * e.s, m.position.z - e.a.pos.z * e.s);
+      const eater = eaters.reduce((x, y) => (dist(y) < dist(x) ? y : x));
+      if (dist(eater) < 0.35) say(pick(["와 정확해!", "나이스 샷 ✨", "코앞이다!"]));
+      food.eater = eater;
+      if (eater.bb) eater.bb.next = 99;   // 먹는 동안 엄마 따라가기 멈춤
+      eater.a.goEat(m.position.x / eater.s, m.position.z / eater.s, REACH, () => { food.state = "eating"; });
+    }
+    return;
+  }
+  if (food.state !== "eating") return;
+  const ea = food.eater.a;
+  const k = ea.level("eat");
+  if (k >= 0) {   // 한 입 먹을 때마다 작아진다
+    m.scale.setScalar(Math.max(0.12, 1 - Math.floor(k * 5 + 0.3) / 5 * 0.9));
+    return;
+  }
+  scene.remove(m);
+  const bb = food.eater.bb;
+  if (bb) { grow(bb, 0.15); bb.next = 1; say(pick(["냠냠 맛있어요 🐣", "삐약! 더 주세요", "쑥쑥 클 거예요!"])); }
+  else say(food.line);
+  hearts();
+  food = null;
+  ea.restYaw = 0;
+  setTimeout(() => ea.play("happy"), 200);   // 다 먹고 신나서 파닥 + 통통
+}
+
+document.getElementById("panel").addEventListener("click", (e) => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  if (b.dataset.acc) { b.classList.toggle("on", toggle(b.dataset.acc)); anim?.play("hop"); }
+  if (b.dataset.act) anim?.play(b.dataset.act);
+  if (b.dataset.feed) feed(b.dataset.feed);
+});
+
+// ---- 까치랑 놀기 ----
+// 평소에는 어디를 끌어도 화면 돌리기. '까치랑 놀기'를 켜면:
+//   까치를 문지르기 → 쓰다듬기 / 까치를 톡 → 이런저런 반응 / 바닥을 톡 → 그리로 걸어가거나 콩콩
+//   빈 곳을 끌면 여전히 돌려보기
+const play = { on: false };
+const VIEW_HINT = "끌어서 돌려보기 · 스크롤로 확대";
+const PLAY_HINT = "까치를 문지르면 쓰다듬기 · 까치를 톡 · 바닥을 톡 하면 그리로 와요";
+const petting = { on: false, dist: 0, last: null, heartAt: 0 };
+const press = { at: null, onBird: false };
+const pointerRay = new THREE.Raycaster(), ndc = new THREE.Vector2();
+const playBtn = document.getElementById("playBtn");
+function setPlay(on) {
+  play.on = on;
+  playBtn.classList.toggle("on", on);
+  playBtn.textContent = on ? "✋ 놀기 그만" : "🎈 까치랑 놀기";
+  if (food?.state !== "held") hintEl.textContent = on ? PLAY_HINT : VIEW_HINT;
+  if (on) { controls.autoRotate = false; say("놀아줄 거야? 🥰"); anim?.play("hop"); }
+}
+playBtn.addEventListener("click", () => setPlay(!play.on));
+function aim(e) {
+  const r = renderer.domElement.getBoundingClientRect();
+  ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+  pointerRay.setFromCamera(ndc, camera);
+}
+function hitBird(e) {
+  if (!rig) return null;
+  aim(e);
+  return pointerRay.intersectObject(rig.mesh, false)[0] ?? null;
+}
+function hitFloor(e) {
+  aim(e);
+  const p = new THREE.Vector3();
+  return pointerRay.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), p) ? p : null;
+}
+function petHeart(x, y) {
+  const h = document.createElement("div");
+  h.className = "heart";
+  h.textContent = ["💕", "💗", "✨", "💞"][Math.floor(Math.random() * 4)];
+  Object.assign(h.style, { left: `${x - 13}px`, top: `${y - 30}px` });
+  document.body.appendChild(h);
+  setTimeout(() => h.remove(), 1600);
+}
+const pick = (a) => a[Math.floor(Math.random() * a.length)];
+// 까치를 톡 했을 때: 매번 다른 반응
+function poke() {
+  const r = pick([
+    () => { anim.play("hop"); anim.play("chirp"); say(pick(["짹?", "왜 불러?", "나 여기 있어!"])); },
+    () => { anim.play("shake"); say("간지러워 ><"); },
+    () => { anim.play("flap"); say("날아볼까~"); },
+    () => { anim.play("happy"); say("헤헤 😆"); },
+    () => { anim.play("chirp"); anim.play("tailflick"); say("까악!"); },
+  ]);
+  r();
+}
+renderer.domElement.addEventListener("pointerdown", (e) => {
+  press.at = [e.clientX, e.clientY];
+  press.onBird = false;
+  if (!play.on) return;
+  const hit = hitBird(e);
+  if (!hit) return;
+  press.onBird = true;
+  controls.enabled = false;   // OrbitControls 보다 먼저(capture) 막는다
+  petting.on = true; petting.dist = 0; petting.last = [e.clientX, e.clientY];
+  const local = rig.mesh.worldToLocal(hit.point.clone());
+  anim.petStart(local.x >= 0 ? 1 : -1);
+  try { renderer.domElement.setPointerCapture(e.pointerId); } catch {}
+}, { capture: true });
+renderer.domElement.addEventListener("pointermove", (e) => {
+  if (!play.on) return;
+  if (!petting.on) {   // 까치 위에 있으면 손 모양
+    if (!e.buttons) renderer.domElement.style.cursor = hitBird(e) ? "grab" : "";
+    return;
+  }
+  renderer.domElement.style.cursor = "grabbing";
+  const d = Math.hypot(e.clientX - petting.last[0], e.clientY - petting.last[1]);
+  petting.last = [e.clientX, e.clientY];
+  petting.dist += d;
+  if (petting.dist - petting.heartAt > 90) { petting.heartAt = petting.dist; petHeart(e.clientX, e.clientY); }
+});
+function release(e) {
+  const tap = press.at && Math.hypot(e.clientX - press.at[0], e.clientY - press.at[1]) < 8;
+  press.at = null;
+  if (petting.on) {
+    petting.on = false;
+    controls.enabled = true;
+    renderer.domElement.style.cursor = "";
+    anim.petEnd();
+    if (petting.dist < 8) poke();
+    else if (petting.dist > 400) { say(pick(["헤헤 좋아 💕", "더 쓰다듬어줘!", "기분 최고야~"])); setTimeout(() => anim.play("happy"), 300); }
+    petting.heartAt = 0;
+    return;
+  }
+  // 놀기 중 바닥을 톡 → 그리로 (바닥 안쪽만)
+  if (play.on && tap && e.type === "pointerup") {
+    // 알을 톡 → 엄마가 품으러 / 아기를 톡 → 삐약
+    aim(e);
+    if (egg && egg.state === "resting" && pointerRay.intersectObject(egg.shell, true).length) { broodEgg(true); return; }
+    const bb = babies.find((x) => pointerRay.intersectObject(x.mesh, true).length);
+    if (bb) { bb.anim.play("hop"); bb.anim.play("chirp"); say(pick([...bb.sounds, "엄마?"])); grow(bb, 0.03); return; }
+    const p = hitFloor(e);
+    if (p && Math.hypot(p.x / 0.6, p.z / 0.45) <= 1) {
+      anim.walkTo(p.x, p.z);
+      if (Math.random() < 0.5) anim.walk.hop = true;
+      anim.walk.speed = 0.36;
+      anim.restYaw = 0;
+    }
+  }
+}
+renderer.domElement.addEventListener("pointerup", release);
+renderer.domElement.addEventListener("pointercancel", release);
+
+// ---- 알 낳기 → 품기 → 아기 까치 ----
+// 끙끙 → 뿅! 엉덩이에서 알이 톡 → 둥지가 생기고 → 엄마가 가끔(또는 알을 톡 하면) 알 위에 앉아 품는다
+// → 따뜻함이 꽉 차면 알이 흔들리다 깨지고 아기 까치가 삐약! → 아기는 엄마를 졸졸 따라다닌다
+let egg = null;
+const babies = [];
+window.__egg = () => egg; window.__babies = babies; window.__brood = (a) => broodEgg(a);   // 시안 확인용
+const BABY = 0.42;          // 아기 크기 (엄마 대비)
+const WARM_PER_SIT = 0.34;  // 한 번 품을 때마다 (세 번이면 부화)
+const SIT_SECONDS = 5;
+const eggTex = (() => {    // 연한 청록 바탕에 갈색 점 (진짜 까치알처럼, 넓은 쪽에 점이 더 많게)
+  const c = document.createElement("canvas"); c.width = 256; c.height = 128;
+  const g = c.getContext("2d");
+  g.fillStyle = "#c9e3d6"; g.fillRect(0, 0, 256, 128);
+  for (let i = 0; i < 260; i++) {
+    const v = Math.random() ** 0.7 * 128;   // 아래(넓은 쪽)에 더 많이
+    g.fillStyle = `rgba(${110 + Math.random() * 40}, ${80 + Math.random() * 30}, ${50 + Math.random() * 20}, ${0.35 + Math.random() * 0.5})`;
+    g.beginPath(); g.ellipse(Math.random() * 256, 128 - v, 1 + Math.random() * 3.5, 1 + Math.random() * 2.5, Math.random() * 3, 0, Math.PI * 2); g.fill();
+  }
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+})();
+function eggPart(from, to) {   // 달걀 모양 (위가 뾰족) 의 from~to 구간 (0 = 아래, 1 = 꼭대기)
+  const pts = [];
+  for (let i = 0; i <= 24; i++) {
+    const k = from + (to - from) * i / 24, th = k * Math.PI;
+    pts.push(new THREE.Vector2(Math.max(0.0001, Math.sin(th) * 0.034 * (1 - 0.14 * (k - 0.5) * 2)), -Math.cos(th) * 0.045 + 0.045));
+  }
+  const geo = new THREE.LatheGeometry(pts, 32);
+  const m = new THREE.Mesh(geo, new THREE.MeshPhysicalMaterial({ map: eggTex, roughness: 0.45, clearcoat: 0.3, side: THREE.DoubleSide }));
+  m.castShadow = true;
+  return m;
+}
+function makeNest() {          // 지푸라기 둥지
+  const g = new THREE.Group();
+  const straw = new THREE.MeshStandardMaterial({ color: 0xa5814f, roughness: 1 });
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(0.06, 0.022, 10, 32), straw);
+  ring.rotation.x = -Math.PI / 2; ring.position.y = 0.015; ring.scale.z = 0.8;
+  g.add(ring);
+  for (let i = 0; i < 26; i++) {   // 삐죽삐죽 잔가지
+    const tw = new THREE.Mesh(new THREE.CylinderGeometry(0.0025, 0.0025, 0.05 + Math.random() * 0.04, 5),
+      new THREE.MeshStandardMaterial({ color: [0x8c6a3d, 0xb8935d, 0x7a5a32][i % 3], roughness: 1 }));
+    const a = (i / 26) * Math.PI * 2;
+    tw.position.set(Math.cos(a) * 0.065, 0.02 + Math.random() * 0.012, Math.sin(a) * 0.065);
+    tw.rotation.set(Math.PI / 2 + (Math.random() - 0.5) * 0.6, 0, a + Math.PI / 2 + (Math.random() - 0.5) * 0.8);
+    g.add(tw);
+  }
+  g.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+  const outer = new THREE.Group();   // 엄마가 폭 들어앉을 만큼 넉넉하게
+  g.scale.setScalar(1.9);
+  outer.add(g);
+  return outer;
+}
+function crackLine() {          // 지그재그 금 (알 가운데를 한 바퀴)
+  const pts = [];
+  for (let i = 0; i <= 36; i++) {
+    const a = i / 36 * Math.PI * 2, r = 0.0345;
+    pts.push(new THREE.Vector3(Math.cos(a) * r, 0.05 + (i % 2 ? 0.006 : -0.006), Math.sin(a) * r));
+  }
+  const m = new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts, true, "catmullrom", 0), 72, 0.0018, 5, true),
+    new THREE.MeshBasicMaterial({ color: 0x3a2a1a }));
+  m.visible = false;
+  return m;
+}
+const eggTag = document.createElement("div");
+eggTag.className = "eggTag"; eggTag.style.display = "none";
+document.body.appendChild(eggTag);
+
+document.getElementById("layBtn").addEventListener("click", layEgg);
+function layEgg() {
+  if (!anim) return;
+  if (egg) { say("알은 하나씩만 품을 수 있어요 🥚"); return; }
+  if (babies.length >= 3) { say("아기가 셋이나 있어요! 먼저 키워 독립시켜요 🐣"); return; }
+  if (anim.level("lay") >= 0 || anim.sit.on) return;
+  anim.walk = null;
+  anim.restYaw = 0;
+  anim.strollNext = anim.t + 8;
+  anim.play("lay");
+  say("끙...");
+  setTimeout(() => say("끙끙...!!"), 1100);
+  setTimeout(popEgg, 3400 * 0.72);
+}
+function popEgg(at = null, hybrid = null) {
+  // 엉덩이(꼬리 뿌리 아래)에서 뒤쪽으로 톡 (결혼한 커플의 알은 두 사람 사이에서 톡)
+  const back = new THREE.Vector3(-Math.sin(anim.pos.yaw), 0, -Math.cos(anim.pos.yaw));
+  const start = at ? at.clone().setY(0.3) : new THREE.Vector3(anim.pos.x, 0.2, anim.pos.z).addScaledVector(back, 0.2);
+  if (at) back.set(0, 0, 0.15);
+  const g = new THREE.Group();
+  const bottom = eggPart(0, 0.55), top = eggPart(0.55, 1), crack = crackLine();
+  const shell = new THREE.Group(); shell.add(bottom, top, crack);
+  const nest = makeNest(); nest.scale.setScalar(0.001);
+  g.add(nest, shell);
+  g.position.copy(start);
+  scene.add(g);
+  egg = { g, shell, top, bottom, crack, nest, state: "popping", warm: 0, v: back.multiplyScalar(0.7).setY(0.9), t: 0, spin: 6, hybrid };
+  say("뿅!");
+  hearts(3);
+}
+function broodEgg(asked) {
+  if (!egg || egg.state !== "resting" || anim.sit.on || anim.walk?.brooding) return;
+  if (asked) say("내가 품어줄게 🥰");
+  const p = egg.g.position;
+  anim.sitOn(p.x, p.z, SIT_SECONDS, () => {
+    if (!egg) return;
+    if (egg.warm >= 0.999) hatch();
+    else say(pick(["따뜻하게 품었어", "얼른 나와 아가야", "쑥쑥 자라라~"]));
+  });
+  if (anim.walk) anim.walk.brooding = true;
+}
+function hatch() {
+  egg.state = "hatching"; egg.t = 0;
+  anim.walkTo(egg.g.position.x - 0.28, egg.g.position.z + 0.12);   // 엄마는 옆으로 비켜서 지켜본다
+  anim.restYaw = Math.atan2(0.28, -0.12);
+  say("톡... 톡톡...");
+}
+function updateEgg(dt) {
+  if (!egg) return;
+  egg.t += dt;
+  const g = egg.g;
+  if (egg.state === "popping") {   // 톡 떨어져 통통 → 멈추면 둥지가 쑥
+    egg.v.y -= 7 * dt;
+    g.position.addScaledVector(egg.v, dt);
+    egg.shell.rotation.x += egg.spin * dt;
+    if (g.position.y <= 0) {
+      g.position.y = 0;
+      egg.v.y *= -0.3; egg.v.x *= 0.4; egg.v.z *= 0.4; egg.spin *= 0.3;
+      if (egg.v.y < 0.2) {
+        egg.state = "resting"; egg.t = 0; egg.shell.rotation.set(0, 0, 0);
+        const P = anim.pos;
+        anim.restYaw = Math.atan2(g.position.x - P.x, g.position.z - P.z);   // 돌아서서 알을 본다
+        if (egg.hybrid) {   // 결혼한 둘의 알: 금방 깨어난다
+          setTimeout(() => { say("두 사람의 알이에요 🥚💕"); hearts(); }, 400);
+          setTimeout(() => { if (egg) { egg.warm = 1; hatch(); } }, 2600);
+        } else {
+          setTimeout(() => { say("어머! 내 알이다 🥚"); hearts(); anim.play("happy"); }, 500);
+          setTimeout(() => broodEgg(false), 2600);
+        }
+      }
+    }
+    return;
+  }
+  // 둥지가 쑥 자라고, 알은 둥지 안에 쏙
+  const ns = Math.min(1, g.userData.nestK = (g.userData.nestK ?? 0) + dt * 2.5);
+  egg.nest.scale.setScalar(ns);
+  egg.shell.position.y = 0.012 * ns;
+  if (egg.state === "resting") {
+    // 엄마가 알 위에 앉아 있는 동안 따뜻해진다
+    if (anim.sit.on && Math.hypot(anim.pos.x - g.position.x, anim.pos.z - g.position.z) < 0.05)
+      egg.warm = Math.min(1, egg.warm + dt * WARM_PER_SIT / SIT_SECONDS);
+    // 따뜻해질수록 가끔 꼼지락
+    const wob = egg.warm > 0.5 ? Math.max(0, Math.sin(egg.t * 1.3)) ** 8 * 0.25 * egg.warm : 0;
+    egg.shell.rotation.z = Math.sin(egg.t * 30) * wob;
+    // 혼자서도 가끔 품으러 간다
+    if (!anim.sit.on && !anim.walk && !food && anim.level("lay") < 0 && Math.random() < dt / 10) broodEgg(false);
+    showEggTag(`🥚 따뜻함 ${Math.round(egg.warm * 100)}%${egg.warm > 0.66 ? " · 곧 나올 것 같아요!" : ""}`);
+    return;
+  }
+  if (egg.state === "hatching") {   // 점점 세게 흔들리고 금이 간다 → 뚜껑이 퐁
+    const k = Math.min(1, egg.t / 2.4);
+    egg.crack.visible = k > 0.25;
+    egg.shell.rotation.z = Math.sin(egg.t * 34) * 0.06 * (0.3 + k);
+    egg.shell.rotation.x = Math.cos(egg.t * 29) * 0.04 * k;
+    showEggTag(k < 0.5 ? "🥚 톡... 톡톡..." : "🥚 나온다 나온다!");
+    if (k >= 1) {
+      egg.state = "open"; egg.t = 0;
+      egg.shell.rotation.set(0, 0, 0);
+      egg.crack.visible = false;
+      egg.topV = new THREE.Vector3((Math.random() - 0.5) * 0.4, 1.2, (Math.random() - 0.5) * 0.4);
+      const wp = g.position.clone();
+      makeBaby(wp, egg.hybrid ?? null);
+      hearts(8);
+      eggTag.style.display = "none";
+    }
+    return;
+  }
+  if (egg.state === "open") {   // 뚜껑 껍데기는 퐁 날아가 사라지고, 아래 껍데기와 둥지는 조금 있다 정리
+    egg.topV.y -= 6 * dt;
+    egg.top.position.addScaledVector(egg.topV, dt);
+    egg.top.rotation.z += dt * 8;
+    if (egg.top.position.y < -0.02) egg.top.visible = false;
+    if (egg.t > 4) {
+      const f = Math.max(0, 1 - (egg.t - 4) / 0.8);
+      egg.shell.scale.setScalar(f); egg.nest.scale.setScalar(f);
+      if (f <= 0) { scene.remove(g); egg = null; }
+    }
+  }
+}
+function showEggTag(text) {
+  const p = egg.g.position.clone().add(new THREE.Vector3(0, 0.16, 0)).project(camera);
+  eggTag.style.display = "";
+  eggTag.textContent = text;
+  eggTag.style.left = `${(p.x + 1) / 2 * innerWidth}px`;
+  eggTag.style.top = `${(1 - p.y) / 2 * innerHeight}px`;
+}
+
+// 아기 까치: 엄마 모델을 통째로 복제해서 작게 (머리는 조금 크게, 꼬리는 짧게 — 아기 같은 비율)
+// 어떤 아기가 나올지: 대부분 까치(색은 랜덤), 가끔은 전혀 다른 동물!
+const BIRD_COLORS = [   // [이름, 진한 색, 밝은 색, 소개]
+  ["까망이", null, null, "삐약! 아기 까치예요 🐣", 4],
+  ["파랑이", 0x3f6f9a, 0xeaf3f8, "삐약! 파란 아기 까치예요 💙", 1],
+  ["분홍이", 0xd98aa2, 0xfff0f4, "삐약! 분홍 아기 까치예요 🩷", 1],
+  ["노랑이", 0xd9a21c, 0xfff6d6, "삐약! 노란 아기 까치예요 💛", 1],
+  ["하양이", 0xdcd6cc, 0xffffff, "삐약! 새하얀 아기 까치예요 🤍", 1],
+  ["초코", 0x5b3a29, 0xf3e2cc, "삐약! 초코색 아기 까치예요 🤎", 1],
+  ["민트", 0x4fa38e, 0xe8faf3, "삐약! 민트색 아기 까치예요 💚", 1],
+];
+// 소개팅 손님 (다 자란 아기 까치의 짝 후보)
+const CRITTERS = {
+  monkey: { name: "원숭이", emoji: "🐒", sounds: ["끼끼!", "우끼끼", "끼약!"],
+            intro: "안녕! 나는 원숭이야. 바나나 좋아해? 🍌", like: "너 웃는 게 귀엽다 끼끼!", no: "미안... 나는 나무 위에서 살아야 해서 🌴" },
+  pony:   { name: "망아지", emoji: "🐴", sounds: ["히힝!", "히히힝~", "푸르릉"],
+            intro: "안녕하세요, 망아지예요. 달리기 좋아해요 🏃", like: "같이 들판 달리러 갈래요? 히힝!", no: "미안해요... 저는 너무 빨리 달려서 🐎" },
+  piglet: { name: "돼지", emoji: "🐷", sounds: ["꿀꿀!", "꾸울~", "꿀?"],
+            intro: "꿀꿀! 맛있는 거 먹는 거 좋아해요 🍰", like: "케이크 반띵해요 꿀꿀 💕", no: "미안... 나 다이어트 중이라 데이트는 좀... 🐽" },
+  turtle: { name: "거북이", emoji: "🐢", sounds: ["느릿...", "거북~", "...안녕"],
+            intro: "안...녕...하...세...요... 거북이...예요...", like: "천...천...히... 오래오래 같이 있자...", no: "미안... 대답하는 데 100년 걸렸네... 🐢" },
+  bunny:  { name: "토끼", emoji: "🐰", sounds: ["깡총!", "콩콩", "킁킁"],
+            intro: "깡총! 토끼예요. 당근 좋아해요 🥕", like: "너랑 있으면 귀가 쫑긋해져 💕", no: "미안해... 나 무서워서 도망갈래! 🐇💨" },
+  panda:  { name: "판다", emoji: "🐼", sounds: ["냠냠", "판다~", "데굴"],
+            intro: "안녕~ 판다야. 우리 둘 다 흑백이네? 🖤🤍", like: "우리 커플룩이다! 대나무 나눠 줄게 🎋", no: "미안... 나 지금 졸려서... 쿨쿨 💤" },
+};
+const weighted = (list, w) => { let r = Math.random() * list.reduce((a, x) => a + w(x), 0); return list.find((x) => (r -= w(x)) < 0) ?? list[0]; };
+function rollBaby() {
+  if (window.__nextBaby) { const k = window.__nextBaby; window.__nextBaby = null; return k; }   // 시안 확인용
+  return weighted(BIRD_COLORS, (c) => c[4])[0];
+}
+const usedNames = {};
+function babyName(base) { usedNames[base] = (usedNames[base] ?? 0) + 1; return usedNames[base] > 1 ? `${base} ${usedNames[base]}` : base; }
+
+function makeBaby(at, hybrid = null) {
+  const kind = hybrid ?? rollBaby();
+  const critter = null;
+  const made = hybrid ? makeHybrid(hybrid) : makeBirdBaby(BIRD_COLORS.find((c) => c[0] === kind));
+  const { mesh, bones } = made;
+  mesh.position.set(0, 0, 0);
+  mesh.scale.setScalar(BABY);
+  body.add(mesh);
+  const banim = new Animator({ mesh, bones }, made.anim);
+  banim.tailMesh = made.tailMesh ?? null;
+  banim.strollNext = 1e9;
+  banim.chirpNext = banim.t + 3;
+  const sounds = critter ? critter.sounds : ["삐약!", "삐약삐약", "삡!"];
+  banim.onChirp = () => say(pick(sounds), true);
+  // 바닥 좌표 → 아기 몸 좌표 (작게 줄인 만큼 나눠 준다)
+  banim.pos.x = at.x / BABY; banim.pos.z = at.z / BABY;
+  banim.pos.yaw = Math.atan2(anim.pos.x - at.x, anim.pos.z - at.z);
+  banim.play("hop");
+  const tag = document.createElement("div");
+  tag.className = "eggTag";
+  document.body.appendChild(tag);
+  const bb = { mesh, anim: banim, face: made.face, bones, tail: made.tail, next: 1.5, pop: 0, g: 0, scale: BABY,
+               state: "home", tag, hat: makeHat(), name: babyName(hybrid ? HYBRIDS[hybrid].name : kind),
+               bird: !critter, kind, legs: made.legs, sounds };
+  // 모자: 머리 꼭대기에 폭 눌러쓰게. 평소엔 숨겨 두었다가 유치원 갈 때 쓴다
+  bb.hat.position.copy(made.hatAt);
+  bb.hat.visible = false;
+  bones.head.add(bb.hat);
+  babies.push(bb);
+  applyGrowth(bb);
+  // 부화 인사 (다른 동물이면 엄마가 당황)
+  if (hybrid) {
+    say(HYBRIDS[hybrid].hello);
+    setTimeout(() => { anim.play("happy"); say(`할머니가 됐어요! ${bb.name}야 안녕 💕`); }, 1300);
+  } else {
+    say(BIRD_COLORS.find((c) => c[0] === kind)[3]);
+    setTimeout(() => { anim.play("happy"); say(`${bb.name}야 안녕! 💕`); }, 1300);
+  }
+}
+
+// 아기 까치: 엄마 모델을 통째로 복제해서 작게 (머리는 조금 크게, 꼬리는 짧게 — 아기 같은 비율). 색은 랜덤
+function makeBirdBaby(color) {
+  // 장신구는 엄마 것이라 잠깐 떼고 복제
+  const worn = Object.values(acc).filter((g) => g.parent).map((g) => [g, g.parent]);
+  worn.forEach(([g, p]) => p.remove(g));
+  const src = [], dst = [];
+  const mesh = SkeletonUtils.clone(rig.mesh);
+  worn.forEach(([g, p]) => p.add(g));
+  rig.mesh.traverse((o) => src.push(o));
+  mesh.traverse((o) => dst.push(o));
+  const twin = (o) => dst[src.indexOf(o)];
+  const bones = {};
+  mesh.skeleton.bones.forEach((b) => {
+    bones[b.name] = b;
+    b.userData.rest = rig.bones[b.name].userData.rest.clone();   // 복제하면 userData 가 평범한 객체가 돼서 다시 넣는다
+  });
+  const tailMesh = twin(anim.tailMesh);
+  if (color[1] !== null) {
+    // 깃털 색 바꾸기: 검정 → 진한 색, 흰색 → 밝은 색 (발의 회색은 그대로). 모델·꼬리는 이 아기만의 것으로 복사
+    const geo = mesh.geometry = mesh.geometry.clone();
+    const col = geo.attributes.color, c = new THREE.Color();
+    const dark = new THREE.Color(color[1]), light = new THREE.Color(color[2]), feet = new THREE.Color(0x34333a);
+    for (let i = 0; i < col.count; i++) {
+      c.setRGB(col.getX(i), col.getY(i), col.getZ(i));
+      if (Math.abs(c.r - feet.r) + Math.abs(c.g - feet.g) + Math.abs(c.b - feet.b) < 0.02) continue;
+      const k = THREE.MathUtils.clamp((c.r + c.g + c.b) / 3 / 0.85, 0, 1);
+      c.copy(dark).lerp(light, k);
+      col.setXYZ(i, c.r, c.g, c.b);
+    }
+    col.needsUpdate = true;
+    tailMesh.traverse((o) => { if (o.isMesh) { o.material = o.material.clone(); o.material.color.set(color[1]); } });
+  }
+  return {
+    mesh, bones, tailMesh, tail: tailMesh, anim: M.anim,
+    face: { eyes: face.eyes.map(twin), happy: face.happy.map(twin), blinkNext: 1, blinkT: -1,
+            beak: face.beak ? { tongue: twin(face.beak.tongue) } : null },
+    hatAt: new THREE.Vector3(0, A.head.y - 0.03, A.head.z - 0.01).sub(rig.at.head),
+  };
+}
+
+// ---- 다른 동물 아기 (말·원숭이·돼지): 도형으로 만든 보송보송 인형 ----
+// 까치와 같은 뼈 이름(root/body/head/tail/jaw/foot…)을 써서 같은 Animator 로 걷고 뛰고 콕콕 한다.
+// 다리는 걸음 박자(pos.step)에 맞춰 따로 흔든다
+function makeCritter(kind) {
+  const flock = (c) => new THREE.MeshPhysicalMaterial({ color: c, roughness: 1, sheen: 0.6, sheenRoughness: 0.5, sheenColor: new THREE.Color(0xffffff).lerp(new THREE.Color(c), 0.75) });
+  const mesh = new THREE.Group();
+  const bones = {};
+  for (const n of ["root", "body", "head", "tail", "wingL", "wingR", "footL", "footR", "jaw", "wingLowL", "wingLowR"]) {
+    bones[n] = new THREE.Object3D(); bones[n].name = n;
+  }
+  const B = bones;
+  mesh.add(B.root); B.root.add(B.body, B.footL, B.footR); B.body.add(B.head, B.tail, B.wingL, B.wingR);
+  B.head.add(B.jaw); B.wingL.add(B.wingLowL); B.wingR.add(B.wingLowR);
+  B.body.position.set(0, 0.3, 0);
+  B.footL.position.set(0.08, 0, 0); B.footR.position.set(-0.08, 0, 0);
+  const ball = (r, c, x = 0, y = 0, z = 0, sx = 1, sy = 1, sz = 1) => {
+    const m = new THREE.Mesh(new THREE.SphereGeometry(r, 32, 20), typeof c === "number" ? flock(c) : c);
+    m.position.set(x, y, z); m.scale.set(sx, sy, sz); return m;
+  };
+  const stick = (r1, r2, h, c) => { const m = new THREE.Mesh(new THREE.CylinderGeometry(r1, r2, h, 20), typeof c === "number" ? flock(c) : c); return m; };
+  const eyesOn = (head, y, z, gap, r = 0.026) => {   // 반짝이는 구슬 눈 + 웃을 때 ^^
+    const eyes = [], happy = [];
+    const bead = new THREE.MeshPhysicalMaterial({ color: 0x050505, roughness: 0.12, clearcoat: 1 });
+    const line = new THREE.MeshPhysicalMaterial({ color: 0x050505, roughness: 0.3 });
+    for (const sd of [-1, 1]) {
+      const e = new THREE.Group();
+      const b = new THREE.Mesh(new THREE.SphereGeometry(r, 20, 14), bead); b.scale.set(1, 1.1, 0.7); e.add(b);
+      const hl = new THREE.Mesh(new THREE.SphereGeometry(r * 0.28, 10, 8), new THREE.MeshBasicMaterial({ color: 0xffffff }));
+      hl.position.set(r * 0.3, r * 0.4, r * 0.6); e.add(hl);
+      e.position.set(sd * gap, y, z); e.rotation.y = sd * 0.3;
+      const arc = new THREE.Mesh(new THREE.TorusGeometry(r * 0.75, r * 0.2, 8, 16, Math.PI), line);
+      arc.position.set(sd * gap, y - 0.004, z + 0.006); arc.rotation.y = sd * 0.3; arc.visible = false;
+      head.add(e, arc); eyes.push(e); happy.push(arc);
+    }
+    return { eyes, happy, blinkNext: 1, blinkT: -1, beak: null };
+  };
+  const legs = [];   // [다리 그룹, 박자(0 또는 π), 흔들 크기]
+  const leg = (parent, x, y, z, len, r, c, hoof, phase, amp = 0.55) => {
+    const g = new THREE.Group(); g.position.set(x, y, z);
+    const l = stick(r, r * 0.9, len, c); l.position.y = -len / 2; g.add(l);
+    if (hoof) { const h = stick(r * 1.05, r * 1.15, 0.035, hoof); h.position.y = -len + 0.012; g.add(h); }
+    else { const f = ball(r * 1.15, c, 0, -len + 0.005, 0.01, 1, 0.6, 1.3); g.add(f); }
+    parent.add(g); legs.push([g, phase, amp]); return g;
+  };
+  let face, hatAt, tail;
+  let anim = { eatBody: 0.15, eatHead: 1.0, stubScale: 1 };
+  if (kind === "pony") {
+    const coat = 0xc8915a, cream = 0xf3e3c8, mane = 0x5a3a24;
+    B.body.add(ball(0.17, coat, 0, 0.14, -0.01, 0.95, 0.85, 1.35));                    // 몸통
+    const neck = stick(0.075, 0.1, 0.2, coat); neck.position.set(0, 0.27, 0.15); neck.rotation.x = 0.5; B.body.add(neck);
+    B.head.position.set(0, 0.4, 0.2);
+    B.head.add(ball(0.13, coat, 0, 0.02, 0.03, 0.95, 1, 1.05));                        // 머리 (아기라 크게)
+    B.head.add(ball(0.085, cream, 0, -0.045, 0.13, 1.05, 0.85, 0.9));                  // 주둥이
+    for (const sd of [-1, 1]) {
+      B.head.add(ball(0.012, 0x6b4a3a, sd * 0.03, -0.035, 0.205));                       // 콧구멍
+      const ear = new THREE.Mesh(new THREE.ConeGeometry(0.035, 0.08, 16), flock(coat));
+      ear.position.set(sd * 0.07, 0.13, -0.01); ear.rotation.z = -sd * 0.3; B.head.add(ear);
+    }
+    for (let i = 0; i < 5; i++) B.head.add(ball(0.04, mane, 0, 0.13 - i * 0.03, -0.02 - i * 0.045, 0.6, 1, 1));   // 갈기
+    B.jaw.position.set(0, -0.08, 0.1);
+    face = eyesOn(B.head, 0.04, 0.115, 0.075);
+    hatAt = new THREE.Vector3(0, 0.12, 0.0);
+    tail = new THREE.Group(); B.tail.position.set(0, 0.17, -0.22); B.tail.add(tail);
+    for (let i = 0; i < 4; i++) tail.add(ball(0.04 - i * 0.004, mane, 0, -0.03 - i * 0.045, -0.02 - i * 0.012, 0.8, 1.3, 0.8));
+    for (const [x, z, ph] of [[0.08, 0.12, 0], [-0.08, 0.12, Math.PI], [0.08, -0.13, Math.PI], [-0.08, -0.13, 0]])
+      leg(B.root, x, 0.32, z, 0.3, 0.035, coat, 0x5a3a24, ph);
+  } else if (kind === "monkey") {
+    const fur = 0x7a5236, peach = 0xf0c9a0;
+    anim = { eatBody: 0.5, eatHead: 0.6, stubScale: 1 };
+    B.body.add(ball(0.15, fur, 0, 0.05, 0, 1, 1.1, 0.95));                             // 몸통 (똑바로 선 자세)
+    B.body.add(ball(0.1, peach, 0, 0.04, 0.08, 1, 1.15, 0.6));                         // 배
+    B.head.position.set(0, 0.27, 0.01);
+    B.head.add(ball(0.155, fur, 0, 0.06, 0));                                          // 머리
+    B.head.add(ball(0.11, peach, 0, 0.03, 0.08, 1.15, 0.95, 0.75));                   // 얼굴
+    for (const sd of [-1, 1]) {
+      B.head.add(ball(0.05, fur, sd * 0.155, 0.07, -0.01, 0.5, 1, 1));                  // 귀
+      B.head.add(ball(0.03, peach, sd * 0.165, 0.07, 0.0, 0.4, 0.8, 0.8));
+    }
+    B.jaw.position.set(0, -0.02, 0.16);
+    B.jaw.add(ball(0.025, 0x6b3a2a, 0, 0, 0, 1.4, 0.5, 0.5));                          // 입
+    face = eyesOn(B.head, 0.07, 0.14, 0.045, 0.024);
+    hatAt = new THREE.Vector3(0, 0.19, -0.01);
+    tail = new THREE.Group(); B.tail.position.set(0, -0.05, -0.13); B.tail.add(tail);
+    const curl = [];
+    for (let i = 0; i <= 20; i++) { const k = i / 20; curl.push(new THREE.Vector3(0, -0.02 + k * 0.28 + Math.sin(k * 7) * 0.02, -k * 0.12 - Math.sin(k * 3.2) * 0.06)); }
+    const tc = new THREE.CatmullRomCurve3(curl); curl.push();
+    tail.add(new THREE.Mesh(new THREE.TubeGeometry(tc, 40, 0.018, 10), flock(fur)));
+    const tip = ball(0.022, fur); tip.position.copy(curl[20]); tail.add(tip);
+    for (const sd of [-1, 1]) leg(B.body, sd * 0.13, 0.1, 0.02, 0.2, 0.03, fur, null, sd > 0 ? Math.PI : 0, 0.7);   // 팔 (반대 박자로)
+    for (const sd of [-1, 1]) leg(B.root, sd * 0.07, 0.2, 0.0, 0.2, 0.04, fur, null, sd > 0 ? 0 : Math.PI);
+  } else if (kind === "turtle") {
+    const shellC = 0x5f8f4a, skin = 0xa8c97f, deep = 0x3f6b33;
+    anim = { eatBody: 0.05, eatHead: 0.7, stubScale: 1 };
+    const dome = ball(0.2, shellC, 0, -0.06, -0.02, 1, 0.7, 1.15);                      // 등딱지
+    B.body.add(dome);
+    for (let i = 0; i < 7; i++) {   // 등딱지 무늬
+      const a = i / 6 * Math.PI * 2, r = i ? 0.1 : 0;
+      const sp = ball(0.05, deep, Math.cos(a) * r, 0.065 - (i ? 0.025 : 0), Math.sin(a) * r * 1.1 - 0.02, 1, 0.35, 1);
+      B.body.add(sp);
+    }
+    B.body.add(ball(0.205, 0xc9b26b, 0, -0.1, -0.02, 1.02, 0.25, 1.17));               // 배딱지
+    B.head.position.set(0, -0.06, 0.24);
+    const neck = stick(0.05, 0.055, 0.1, skin); neck.rotation.x = Math.PI / 2 - 0.4; neck.position.set(0, -0.02, -0.04); B.head.add(neck);
+    B.head.add(ball(0.085, skin, 0, 0.03, 0.03, 1, 0.95, 1.1));
+    B.jaw.position.set(0, -0.01, 0.1);
+    B.jaw.add(ball(0.02, 0x4a6b3a, 0, 0, 0, 1.5, 0.4, 0.5));
+    face = eyesOn(B.head, 0.055, 0.085, 0.045, 0.02);
+    hatAt = new THREE.Vector3(0, 0.1, 0.03);
+    tail = new THREE.Group(); B.tail.position.set(0, -0.08, -0.24); B.tail.add(tail);
+    const tl = new THREE.Mesh(new THREE.ConeGeometry(0.025, 0.07, 12), flock(skin)); tl.rotation.x = -Math.PI / 2 - 0.3; tail.add(tl);
+    for (const [x, z, ph] of [[0.13, 0.12, 0], [-0.13, 0.12, Math.PI], [0.13, -0.13, Math.PI], [-0.13, -0.13, 0]])
+      leg(B.root, x, 0.16, z, 0.13, 0.045, skin, null, ph, 0.4);
+  } else if (kind === "bunny") {
+    const fur = 0xf2ede6, pinkIn = 0xf6b7c3;
+    anim = { eatBody: 0.3, eatHead: 0.8, stubScale: 1 };
+    B.body.add(ball(0.16, fur, 0, 0.02, -0.02, 1, 1.05, 1.1));
+    B.head.position.set(0, 0.2, 0.06);
+    B.head.add(ball(0.13, fur, 0, 0.04, 0.02, 1.05, 0.95, 1));
+    for (const sd of [-1, 1]) {   // 긴 귀
+      const ear = new THREE.Group(); ear.position.set(sd * 0.05, 0.14, -0.01); ear.rotation.set(-0.15, 0, -sd * 0.18);
+      ear.add(ball(0.035, fur, 0, 0.11, 0, 1, 3.2, 0.6));
+      ear.add(ball(0.022, pinkIn, 0, 0.11, 0.014, 1, 3.0, 0.4));
+      B.head.add(ear);
+    }
+    B.head.add(ball(0.016, 0xe88ea2, 0, 0.0, 0.14));                                   // 분홍 코
+    B.head.add(ball(0.03, 0xffffff, 0.022, -0.02, 0.12, 1, 0.8, 0.7), ball(0.03, 0xffffff, -0.022, -0.02, 0.12, 1, 0.8, 0.7));
+    B.jaw.position.set(0, -0.045, 0.12);
+    face = eyesOn(B.head, 0.06, 0.11, 0.06, 0.024);
+    hatAt = new THREE.Vector3(0, 0.15, 0.0);
+    tail = new THREE.Group(); B.tail.position.set(0, 0.0, -0.18); B.tail.add(tail);
+    tail.add(ball(0.05, 0xffffff));                                                       // 솜뭉치 꼬리
+    for (const sd of [-1, 1]) leg(B.root, sd * 0.07, 0.12, 0.1, 0.1, 0.03, fur, null, 0, 0.3);         // 앞발
+    for (const sd of [-1, 1]) { const g = leg(B.root, sd * 0.1, 0.12, -0.08, 0.1, 0.045, fur, null, 0, 0.3); g.children[1].scale.z = 2; }   // 큰 뒷발
+  } else if (kind === "panda") {
+    const white = 0xf7f5f0, black = 0x1c1c1e;
+    anim = { eatBody: 0.4, eatHead: 0.6, stubScale: 1 };
+    B.body.add(ball(0.18, white, 0, 0.04, 0, 1.05, 1, 1));
+    B.body.add(ball(0.185, black, 0, 0.1, 0, 1.07, 0.42, 1.03));                     // 어깨 띠 (몸을 감싸게)
+    B.head.position.set(0, 0.25, 0.03);
+    B.head.add(ball(0.15, white, 0, 0.05, 0.0, 1.05, 0.95, 1));
+    for (const sd of [-1, 1]) {
+      B.head.add(ball(0.045, black, sd * 0.11, 0.17, -0.01, 1, 1, 0.6));               // 동그란 귀
+      const patch = ball(0.035, black, sd * 0.055, 0.055, 0.12, 0.85, 1.25, 0.5); patch.rotation.z = sd * 0.5; B.head.add(patch);   // 눈 무늬
+    }
+    B.head.add(ball(0.018, black, 0, 0.0, 0.15));                                      // 코
+    B.jaw.position.set(0, -0.03, 0.13);
+    face = eyesOn(B.head, 0.06, 0.135, 0.055, 0.017);
+    face.eyes.forEach((e) => e.children[1].scale.setScalar(1.3));
+    hatAt = new THREE.Vector3(0, 0.18, 0.0);
+    tail = new THREE.Group(); B.tail.position.set(0, -0.02, -0.18); B.tail.add(tail);
+    tail.add(ball(0.035, white));
+    for (const sd of [-1, 1]) leg(B.body, sd * 0.16, 0.1, 0.03, 0.17, 0.045, black, null, sd > 0 ? Math.PI : 0, 0.6);   // 팔
+    for (const sd of [-1, 1]) leg(B.root, sd * 0.08, 0.2, 0.0, 0.2, 0.055, black, null, sd > 0 ? 0 : Math.PI);
+  } else {   // piglet
+    const pink = 0xf4b6c2, deep = 0xe68fa3;
+    B.body.add(ball(0.18, pink, 0, 0.08, -0.02, 1, 0.9, 1.25));
+    B.head.position.set(0, 0.17, 0.2);
+    B.head.add(ball(0.14, pink, 0, 0.02, 0.0));
+    const snout = stick(0.055, 0.06, 0.05, deep); snout.rotation.x = Math.PI / 2; snout.position.set(0, -0.01, 0.14); B.head.add(snout);
+    for (const sd of [-1, 1]) {
+      B.head.add(ball(0.011, 0x9c4f61, sd * 0.02, -0.01, 0.168));                       // 콧구멍
+      const ear = new THREE.Mesh(new THREE.ConeGeometry(0.045, 0.08, 3), flock(deep));
+      ear.position.set(sd * 0.08, 0.13, -0.01); ear.rotation.set(0.5, 0, -sd * 0.5); B.head.add(ear);
+    }
+    B.jaw.position.set(0, -0.06, 0.1);
+    face = eyesOn(B.head, 0.05, 0.115, 0.07, 0.022);
+    hatAt = new THREE.Vector3(0, 0.12, -0.01);
+    tail = new THREE.Group(); B.tail.position.set(0, 0.12, -0.24); B.tail.add(tail);
+    const cp = []; for (let i = 0; i <= 24; i++) { const a = i / 24 * Math.PI * 3; cp.push(new THREE.Vector3(Math.cos(a) * 0.025, Math.sin(a) * 0.025 + i * 0.002, -i * 0.003)); }
+    tail.add(new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(cp), 48, 0.008, 8), flock(deep)));
+    for (const [x, z, ph] of [[0.09, 0.12, 0], [-0.09, 0.12, Math.PI], [0.09, -0.14, Math.PI], [-0.09, -0.14, 0]])
+      leg(B.root, x, 0.16, z, 0.15, 0.04, pink, deep, ph);
+  }
+  for (const b of Object.values(bones)) b.userData.rest = b.quaternion.clone();
+  mesh.traverse((o) => { if (o.isMesh) o.castShadow = true; });
+  return { mesh, bones, face, hatAt, tail, legs, anim };
+}
+// 다른 동물 다리: 걸음 박자에 맞춰 앞뒤로 (대각선끼리 같이 → 종종종)
+function swingLegs(bb) {
+  if (!bb.legs) return;
+  const P = bb.anim.pos, gait = P.gait;
+  const hop = bb.anim.level("hop") >= 0 || bb.anim.level("happy") >= 0;
+  for (const [g, ph, amp] of bb.legs) g.rotation.x = Math.sin(P.step + ph) * amp * gait + (hop ? -0.3 : 0);
+}
+let babyCount = 0;
+
+// 노란 유치원 모자 (동그란 모자 + 챙 + 남색 띠 + 작은 노란 단추)
+function makeHat() {
+  const g = new THREE.Group();
+  const yellow = new THREE.MeshPhysicalMaterial({ color: 0xffd23f, roughness: 0.7, sheen: 0.6, sheenColor: new THREE.Color(0xfff4b0) });
+  const crown = new THREE.Mesh(new THREE.SphereGeometry(0.105, 32, 16, 0, Math.PI * 2, 0, Math.PI / 2), yellow);
+  crown.scale.y = 0.85;
+  const brim = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.155, 0.012, 40), yellow);
+  const band = new THREE.Mesh(new THREE.CylinderGeometry(0.107, 0.107, 0.022, 40, 1, true),
+    new THREE.MeshStandardMaterial({ color: 0x2b3a67, roughness: 0.8, side: THREE.DoubleSide }));
+  band.position.y = 0.014;
+  const knob = new THREE.Mesh(new THREE.SphereGeometry(0.014, 12, 8), yellow);
+  knob.position.y = 0.09;
+  g.add(crown, brim, band, knob);
+  g.rotation.set(-0.15, 0, 0.12);   // 살짝 삐딱하게
+  g.scale.setScalar(0.95);
+  g.traverse((o) => { if (o.isMesh) o.castShadow = true; });
+  return g;
+}
+
+// 자람(g: 0→1): 몸은 엄마의 0.42 → 0.85 배로, 머리 비율은 1.3 → 1.05, 꼬리는 0.35 → 0.95
+const babyScale = (g) => BABY + (0.85 - BABY) * g;
+function applyGrowth(bb) {
+  const target = babyScale(bb.g) * (0.3 + 0.7 * bb.pop);   // 처음 나올 땐 쏙 커지면서
+  const old = bb.scale;
+  if (Math.abs(target - old) < 1e-5) return;
+  // 몸 좌표는 크기로 나눈 값이라, 크기가 바뀌어도 바닥 위 자리는 그대로 두게 고쳐 준다
+  bb.anim.pos.x *= old / target; bb.anim.pos.z *= old / target;
+  if (bb.anim.walk) bb.anim.walk.route.forEach((r) => { r.x *= old / target; r.z *= old / target; });
+  bb.scale = target;
+  bb.mesh.scale.setScalar(target);
+  if (bb.bird) {
+    bb.bones.head.scale.setScalar(1.3 - 0.25 * bb.g);
+    bb.tail.scale.setScalar(0.35 + 0.6 * bb.g);
+  } else {   // 다른 동물은 처음부터 아기 비율로 만들어서 조금만
+    bb.bones.head.scale.setScalar(1.1 - 0.1 * bb.g);
+    bb.tail.scale.setScalar(0.7 + 0.3 * bb.g);
+  }
+}
+function grow(bb, amount) {
+  bb.gTarget = Math.min(1, (bb.gTarget ?? bb.g) + amount);
+  if (bb.gTarget >= 1 && bb.g < 1) setTimeout(() => say(`${bb.name} 다 컸어요! 🐦 이제 독립할 수 있어요`), 1500);
+}
+const worldPos = (bb) => ({ x: bb.anim.pos.x * bb.scale, z: bb.anim.pos.z * bb.scale });
+const GATE = { x: -1.0, z: 0.35 };   // 유치원 가는 길 (화면 왼쪽 바깥)
+
+function updateBaby(bb, dt) {
+  bb.anim.update(dt);
+  swingLegs(bb);
+  bb.anim.strollNext = 1e9;   // 혼자 멀리 가지 않고 엄마를 따라다닌다
+  bb.pop = Math.min(1, bb.pop + dt * 3);
+  if (bb.gTarget !== undefined && bb.g < bb.gTarget) bb.g = Math.min(bb.gTarget, bb.g + dt * 0.25);   // 쑥쑥 (천천히 커진다)
+  applyGrowth(bb);
+  const me = worldPos(bb);
+
+  // 머리 위 표시
+  const show = bb.state === "home" || bb.state === "returning" || bb.state === "date";
+  if (show) {
+    const p = new THREE.Vector3(me.x, bb.scale * 0.85 + 0.03, me.z).project(camera);
+    bb.tag.style.display = "";
+    bb.tag.style.left = `${(p.x + 1) / 2 * innerWidth}px`;
+    bb.tag.style.top = `${(1 - p.y) / 2 * innerHeight}px`;
+    bb.tag.textContent = bb.g >= 1 ? `🐦 ${bb.name} · 다 컸어요` : `🐣 ${bb.name} · ${Math.round(bb.g * 100)}%`;
+  } else bb.tag.style.display = "none";
+
+  if (bb.state === "leaving") {   // 모자 쓰고 종종종 화면 밖으로 → 작아지며 사라짐
+    const out = Math.hypot(me.x / 0.75, me.z / 0.55);
+    if (out > 1) bb.mesh.scale.setScalar(bb.scale * Math.max(0, 1 - (out - 1) * 3));
+    if (out > 1.33 || bb.anim.walk === null) {
+      if (bb.forever) { body.remove(bb.mesh); bb.tag.remove(); babies.splice(babies.indexOf(bb), 1); return; }   // 독립: 다시 안 돌아온다
+      bb.state = "away"; bb.mesh.visible = false; bb.awayUntil = performance.now() + KINDER_MS;
+    }
+    return;
+  }
+  if (bb.state === "away") {
+    if (performance.now() > bb.awayUntil) {   // 유치원 끝! 같은 길로 돌아온다
+      bb.state = "returning";
+      bb.mesh.visible = true;
+      bb.anim.pos.x = GATE.x / bb.scale; bb.anim.pos.z = GATE.z / bb.scale;
+      const mom = anim.pos;
+      bb.anim.walkTo((mom.x - 0.3) / bb.scale, (mom.z + 0.15) / bb.scale);
+      bb.anim.walk.speed = 0.75; bb.anim.walk.hop = true;
+    }
+    return;
+  }
+  if (bb.state === "returning") {
+    const out = Math.hypot(me.x / 0.75, me.z / 0.55);
+    bb.mesh.scale.setScalar(bb.scale * Math.min(1, Math.max(0, 1 - (out - 1) * 3)));
+    if (!bb.anim.walk) {
+      bb.state = "home"; bb.next = 2;
+      bb.mesh.scale.setScalar(bb.scale);
+      say(pick([`${bb.name}: 다녀왔어요! 오늘 노래 배웠어요 🎵`, `${bb.name}: 다녀왔어요! 친구랑 놀았어요`, `${bb.name}: 엄마~ 그림 그렸어요 🖍️`]));
+      bb.anim.play("happy");
+      anim.play("hop");
+      hearts(4);
+      grow(bb, 0.25);
+      setTimeout(() => { bb.hat.visible = false; }, 2500);   // 집에 오면 모자 벗기
+    }
+    return;
+  }
+  if (bb.state === "flying") {   // 독립: 파닥파닥 날아올라 멀리
+    bb.fly += dt;
+    if (bb.anim.level("flap") < 0) bb.anim.play("flap");
+    bb.mesh.position.y += dt * 0.5 * bb.fly;
+    bb.mesh.position.x += dt * 0.35 * bb.fly;
+    if (bb.fly > 3.5) {
+      body.remove(bb.mesh); bb.tag.remove();
+      babies.splice(babies.indexOf(bb), 1);
+    }
+    return;
+  }
+
+  if (bb.state === "date") return;   // 소개팅 중엔 자리에 앉아 있기
+  bb.next -= dt;
+  if (bb.next > 0 || bb.anim.walk || bb.anim.acts.length) return;
+  bb.next = 1 + Math.random() * 2.5;
+  const mom = anim.pos;
+  const d = Math.hypot(mom.x - me.x, mom.z - me.z);
+  if (d > 0.42) {   // 엄마랑 멀어지면 엄마 옆(조금 뒤)으로 종종종
+    const i = babies.indexOf(bb), side = i % 2 ? -1 : 1, back = 0.24 + i * 0.06;
+    const bx = mom.x - Math.sin(mom.yaw) * back + Math.cos(mom.yaw) * 0.22 * side;
+    const bz = mom.z - Math.cos(mom.yaw) * back - Math.sin(mom.yaw) * 0.22 * side;
+    bb.anim.walkTo(bx / bb.scale, bz / bb.scale);
+    bb.anim.walk.speed = 0.75;
+    bb.anim.walk.hop = Math.random() < 0.4;
+    bb.anim.restYaw = Math.atan2(mom.x - bx, mom.z - bz);
+  } else {
+    const r = Math.random();
+    if (r < 0.25) bb.anim.play("eat");                        // 엄마 따라 땅 콕콕
+    else if (r < 0.4) { bb.anim.play("chirp"); bb.anim.onChirp(); }
+    else if (r < 0.5) bb.anim.play(bb.bird ? "flap" : "hop");   // 날갯짓 연습 (다른 동물은 콩)
+    bb.anim.restYaw = Math.atan2(mom.x - me.x, mom.z - me.z);   // 엄마를 쳐다본다
+  }
+}
+
+// 서로 겹치지 않게: 너무 가까우면 살짝 밀어낸다 (엄마는 덜, 아기는 더 밀린다)
+function separate() {
+  if (!anim) return;
+  const list = [{ a: anim, s: 1, r: 0.2, w: anim.sit.on ? 0 : 0.3 },
+    ...babies.filter((b) => ["home", "returning", "date"].includes(b.state)).map((b) => ({ a: b.anim, s: b.scale, r: 0.2 * b.scale, w: 1 })),
+    ...guests.filter((g) => g.state !== "leaving").map((g) => ({ a: g.anim, s: g.scale, r: 0.19 * g.scale, w: 1 }))];
+  for (let i = 0; i < list.length; i++) for (let j = i + 1; j < list.length; j++) {
+    const A = list[i], B = list[j];
+    const ax = A.a.pos.x * A.s, az = A.a.pos.z * A.s, bx = B.a.pos.x * B.s, bz = B.a.pos.z * B.s;
+    let dx = bx - ax, dz = bz - az, d = Math.hypot(dx, dz);
+    const min = A.r + B.r + 0.02;
+    if (d >= min) continue;
+    if (d < 1e-4) { dx = 1; dz = 0; d = 1e-4; }
+    const push = (min - d), wa = A.w / (A.w + B.w || 1), wb = B.w / (A.w + B.w || 1);
+    A.a.pos.x -= (dx / d) * push * wa / A.s; A.a.pos.z -= (dz / d) * push * wa / A.s;
+    B.a.pos.x += (dx / d) * push * wb / B.s; B.a.pos.z += (dz / d) * push * wb / B.s;
+  }
+}
+
+// ---- 소개팅 → 결혼 → 섞인 아기 ----
+// 다 자란 아기 까치가 동물 친구를 초대해 소개팅. 성공하면 결혼식 → 알 → 까치와 그 동물을 섞은 새 아기!
+const GUEST = 0.95;   // 손님 크기 (다 자란 아기 까치와 비슷하게)
+const guests = [];
+let date = null;
+window.__guests = guests; window.__date = () => date;   // 시안 확인용
+window.__hybrid = (k, x, z) => makeBaby(new THREE.Vector3(x, 0, z), k);
+window.__guest = (k, x, z) => spawnGuest(k, { x, z });
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+async function waitIdle(list, ms = 9000) {
+  const end = performance.now() + ms;
+  while (performance.now() < end && list.some((a) => a.walk)) await sleep(150);
+}
+
+// 섞인 아기: 아기 까치 몸에 그 동물의 색과 특징(귀·갈기·등딱지·꼬리…)을 붙인다
+const HYBRIDS = {
+  monkey: { name: "까숭이", dark: 0x7a5236, light: 0xf0c9a0, hello: "삐약끼끼?! 까치 + 원숭이 = 까숭이가 태어났어요! 🐦🐒" },
+  pony:   { name: "망까지", dark: 0x9b6a3c, light: 0xf3e3c8, hello: "삐히힝?! 까치 + 망아지 = 망까지가 태어났어요! 🐦🐴" },
+  piglet: { name: "꿀까치", dark: 0xe68fa3, light: 0xffe0e6, hello: "삐약꿀?! 까치 + 돼지 = 꿀까치가 태어났어요! 🐦🐷" },
+  turtle: { name: "까북이", dark: 0x4f7a3a, light: 0xdcebb8, hello: "삐...약...?! 까치 + 거북이 = 까북이가 태어났어요! 🐦🐢" },
+  bunny:  { name: "토까치", dark: 0xcdb9a6, light: 0xffffff, hello: "삐약깡총?! 까치 + 토끼 = 토까치가 태어났어요! 🐦🐰" },
+  panda:  { name: "판까치", dark: 0x1c1c1e, light: 0xffffff, hello: "삐약냠?! 까치 + 판다 = 판까치가 태어났어요! 🐦🐼" },
+};
+function makeHybrid(kind) {
+  const H = HYBRIDS[kind];
+  const made = makeBirdBaby([H.name, H.dark, H.light]);
+  const flock = (c) => new THREE.MeshPhysicalMaterial({ color: c, roughness: 1, sheen: 0.6, sheenRoughness: 0.5, sheenColor: new THREE.Color(0xffffff).lerp(new THREE.Color(c), 0.75) });
+  const ball = (r, c, x, y, z, sx = 1, sy = 1, sz = 1) => {
+    const m = new THREE.Mesh(new THREE.SphereGeometry(r, 28, 18), flock(c)); m.position.set(x, y, z); m.scale.set(sx, sy, sz); m.castShadow = true; return m;
+  };
+  const head = made.bones.head, bodyB = made.bones.body;
+  const crown = new THREE.Vector3(0, A.head.y, A.head.z).sub(rig.at.head);            // 머리 꼭대기 (머리 기준)
+  const eye = made.face.eyes[0]?.position ?? new THREE.Vector3(0.08, crown.y - 0.12, crown.z + 0.15);
+  const bb = rig.mesh.geometry.boundingBox;
+  const rump = new THREE.Vector3(0, rig.at.tail.y + 0.17, bb.min.z + 0.14).sub(rig.at.body);   // 엉덩이 (몸 기준)
+  const back = new THREE.Vector3(0, 0.36, -0.1);                                       // 등 (몸 기준)
+  if (kind === "monkey") {
+    for (const sd of [-1, 1]) {
+      head.add(ball(0.06, H.dark, sd * 0.17, eye.y + 0.02, eye.z - 0.09, 0.45, 1, 1));
+      head.add(ball(0.04, H.light, sd * 0.18, eye.y + 0.02, eye.z - 0.085, 0.35, 0.8, 0.8));
+    }
+  } else if (kind === "pony") {
+    for (const sd of [-1, 1]) {
+      const ear = new THREE.Mesh(new THREE.ConeGeometry(0.04, 0.1, 16), flock(H.dark));
+      ear.position.set(sd * 0.07, crown.y + 0.03, crown.z - 0.01); ear.rotation.z = -sd * 0.3; ear.castShadow = true; head.add(ear);
+    }
+    for (let i = 0; i < 5; i++) head.add(ball(0.045, 0x5a3a24, 0, crown.y + 0.02 - i * 0.05, crown.z - 0.06 - i * 0.04, 0.6, 1, 1));   // 갈기
+  } else if (kind === "piglet") {
+    for (const sd of [-1, 1]) {
+      const ear = new THREE.Mesh(new THREE.ConeGeometry(0.05, 0.09, 3), flock(0xe0798f));
+      ear.position.set(sd * 0.09, crown.y - 0.0, crown.z - 0.02); ear.rotation.set(0.5, 0, -sd * 0.5); ear.castShadow = true; head.add(ear);
+    }
+    const cp = []; for (let i = 0; i <= 24; i++) { const a = i / 24 * Math.PI * 3; cp.push(new THREE.Vector3(Math.cos(a) * 0.03, Math.sin(a) * 0.03 + i * 0.003, -i * 0.004)); }
+    const curl = new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(cp), 48, 0.01, 8), flock(0xe0798f));
+    curl.position.copy(rump).add(new THREE.Vector3(0, 0.04, 0)); bodyB.add(curl);
+  } else if (kind === "turtle") {
+    const shell = new THREE.Group();
+    shell.add(ball(0.24, 0x5f8f4a, 0, 0, 0, 1.05, 0.5, 1.15));
+    for (let i = 0; i < 7; i++) {
+      const a = i / 6 * Math.PI * 2, r = i ? 0.12 : 0;
+      shell.add(ball(0.06, 0x3f6b33, Math.cos(a) * r, 0.105 - (i ? 0.03 : 0), Math.sin(a) * r * 1.1, 1, 0.35, 1));
+    }
+    shell.position.copy(back); shell.rotation.x = -0.35;
+    bodyB.add(shell);
+  } else if (kind === "bunny") {
+    for (const sd of [-1, 1]) {
+      const ear = new THREE.Group(); ear.position.set(sd * 0.05, crown.y - 0.01, crown.z - 0.02); ear.rotation.set(-0.15, 0, -sd * 0.15);
+      ear.add(ball(0.04, H.dark, 0, 0.13, 0, 1, 3.3, 0.6), ball(0.026, 0xf6b7c3, 0, 0.13, 0.016, 1, 3.0, 0.4));
+      head.add(ear);
+    }
+    bodyB.add(ball(0.06, 0xffffff, rump.x, rump.y + 0.03, rump.z));   // 솜꼬리
+  } else if (kind === "panda") {
+    for (const sd of [-1, 1]) {
+      head.add(ball(0.05, 0x1c1c1e, sd * 0.11, crown.y + 0.0, crown.z - 0.02, 1, 1, 0.6));   // 동그란 귀
+      const e = made.face.eyes[sd < 0 ? 0 : 1];
+      if (e) { const pt = ball(0.045, 0x1c1c1e, e.position.x, e.position.y - 0.005, e.position.z - 0.012, 0.9, 1.2, 0.5); pt.rotation.z = -Math.sign(e.position.x) * 0.5; head.add(pt); }   // 눈 무늬
+    }
+  }
+  return made;
+}
+
+// 손님 (다른 동물): 바닥 좌표는 크기로 나눈 몸 좌표로
+function spawnGuest(kind, at) {
+  const made = makeCritter(kind);
+  made.mesh.scale.setScalar(GUEST);
+  body.add(made.mesh);
+  const ganim = new Animator({ mesh: made.mesh, bones: made.bones }, made.anim);
+  ganim.strollNext = 1e9;
+  ganim.chirpNext = 1e9;
+  ganim.pos.x = at.x / GUEST; ganim.pos.z = at.z / GUEST; ganim.pos.yaw = -Math.PI / 2;
+  const g = { ...made, anim: ganim, scale: GUEST, kind, state: "date", next: 2, C: CRITTERS[kind] };
+  guests.push(g);
+  return g;
+}
+function updateGuest(g, dt) {
+  g.anim.update(dt);
+  g.anim.strollNext = 1e9;
+  swingLegs(g);
+  updateFaceOf(g.face, g.anim, dt);
+  const me = { x: g.anim.pos.x * g.scale, z: g.anim.pos.z * g.scale };
+  if (g.state === "leaving") {   // 화면 밖으로 가면 작아지며 사라짐
+    const out = Math.hypot(me.x / 0.75, me.z / 0.55);
+    if (out > 1) g.mesh.scale.setScalar(g.scale * Math.max(0, 1 - (out - 1) * 3));
+    if (out > 1.33 || !g.anim.walk) { body.remove(g.mesh); guests.splice(guests.indexOf(g), 1); }
+    return;
+  }
+  if (g.state !== "home" || !g.spouse) return;
+  // 결혼한 뒤엔 짝꿍 옆을 따라다닌다
+  g.next -= dt;
+  if (g.next > 0 || g.anim.walk || g.anim.acts.length) return;
+  g.next = 1.5 + Math.random() * 2.5;
+  const sp = g.spouse, sx = sp.anim.pos.x * sp.scale, sz = sp.anim.pos.z * sp.scale;
+  if (Math.hypot(sx - me.x, sz - me.z) > 0.5) {
+    g.anim.walkTo((sx + 0.3) / g.scale, (sz + 0.05) / g.scale);
+    g.anim.walk.speed = 0.35;
+    g.anim.restYaw = -Math.PI / 2;
+  } else if (Math.random() < 0.3) { g.anim.play("chirp"); say(pick(g.C.sounds), true); }
+}
+
+function makeTable() {   // 동그란 카페 테이블 + 하트 케이크 + 컵 두 개
+  const t = new THREE.Group();
+  const white = new THREE.MeshStandardMaterial({ color: 0xfffaf3, roughness: 0.6 });
+  const top = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.13, 0.018, 40), white); top.position.y = 0.22;
+  const cloth = new THREE.Mesh(new THREE.CylinderGeometry(0.135, 0.15, 0.04, 40, 1, true), new THREE.MeshStandardMaterial({ color: 0xf7b6c4, roughness: 0.9, side: THREE.DoubleSide }));
+  cloth.position.y = 0.2;
+  const legM = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.02, 0.22, 12), white); legM.position.y = 0.11;
+  const foot = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.07, 0.012, 24), white); foot.position.y = 0.006;
+  const cake = makeFood("cake"); cake.scale.setScalar(0.55); cake.position.y = 0.229;
+  const cupM = new THREE.MeshPhysicalMaterial({ color: 0xffffff, roughness: 0.3, clearcoat: 0.6 });
+  for (const sd of [-1, 1]) {
+    const cup = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.014, 0.03, 20), cupM); cup.position.set(sd * 0.08, 0.245, 0.02);
+    const tea = new THREE.Mesh(new THREE.CircleGeometry(0.016, 20), new THREE.MeshStandardMaterial({ color: 0xc58b5a })); tea.rotation.x = -Math.PI / 2; tea.position.set(sd * 0.08, 0.258, 0.02);
+    t.add(cup, tea);
+  }
+  t.add(top, cloth, legM, foot, cake);
+  t.traverse((o) => { if (o.isMesh) o.castShadow = true; });
+  return t;
+}
+function makeVeil() {   // 하얀 면사포 + 분홍 꽃 화관
+  const g = new THREE.Group();
+  // 머리 꼭대기에서 뒤로 늘어지는 얇은 천 (앞은 열려 있어서 얼굴을 가리지 않는다)
+  const veil = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.17, 0.32, 40, 6, true, Math.PI * 0.4, Math.PI * 1.2),
+    new THREE.MeshPhysicalMaterial({ color: 0xffffff, roughness: 0.5, transparent: true, opacity: 0.6, side: THREE.DoubleSide, sheen: 1, depthWrite: false }));
+  veil.position.set(0, -0.14, -0.07); veil.rotation.x = -0.35;
+  const vp = veil.geometry.attributes.position;   // 아래로 갈수록 살랑 주름
+  for (let i = 0; i < vp.count; i++) { const x = vp.getX(i), y = vp.getY(i), z = vp.getZ(i), k = (0.16 - y) / 0.32, w = 1 + Math.sin(Math.atan2(x, z) * 9) * 0.06 * k; vp.setX(i, x * w); vp.setZ(i, z * w); }
+  veil.geometry.computeVertexNormals();
+  g.add(veil);
+  for (let i = 0; i < 7; i++) {
+    const a = (i / 6 - 0.5) * 2.2;
+    const f = new THREE.Mesh(new THREE.SphereGeometry(0.02, 12, 8), new THREE.MeshPhysicalMaterial({ color: [0xf7a1b5, 0xffffff, 0xffd1dc][i % 3], roughness: 0.6 }));
+    f.position.set(Math.sin(a) * 0.1, 0.0, Math.cos(a) * 0.1 - 0.02); g.add(f);
+  }
+  return g;
+}
+function makeBowtie() {
+  const g = new THREE.Group(), red = new THREE.MeshPhysicalMaterial({ color: 0xc9283f, roughness: 0.5, sheen: 0.6 });
+  for (const sd of [-1, 1]) { const c = new THREE.Mesh(new THREE.ConeGeometry(0.03, 0.05, 16), red); c.rotation.z = sd * Math.PI / 2; c.position.x = sd * 0.025; g.add(c); }
+  g.add(new THREE.Mesh(new THREE.SphereGeometry(0.015, 12, 8), red));
+  return g;
+}
+
+// 소개팅 고르기 창
+const picker = document.createElement("div");
+picker.className = "picker";
+picker.innerHTML = `<div class="pt">누구를 초대할까요? 💌</div>` +
+  Object.entries(CRITTERS).map(([k, c]) => `<button data-guest="${k}">${c.emoji} ${c.name}</button>`).join("");
+document.body.appendChild(picker);
+const dateBtn = document.getElementById("dateBtn");
+dateBtn.addEventListener("click", () => picker.classList.toggle("show"));
+picker.addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-guest]");
+  if (!b) return;
+  picker.classList.remove("show");
+  startDate(b.dataset.guest);
+});
+const singles = () => babies.filter((b) => b.state === "home" && b.g >= 1 && !b.spouse);
+
+async function startDate(kind) {
+  const bb = singles()[0];
+  if (!bb || date) return;
+  const C = CRITTERS[kind];
+  const guest = spawnGuest(kind, { x: 1.05, z: 0.15 });
+  const table = makeTable(); table.position.set(0, 0, 0.12); table.scale.setScalar(0.01); scene.add(table);
+  date = { bb, guest, table };
+  bb.state = "date"; bb.anim.walk = null;
+  say(`💌 ${C.name}를 소개팅에 초대했어요!`);
+  // 테이블이 쑥, 둘이 마주 앉을 자리로, 엄마는 옆에서 지켜본다
+  for (let i = 1; i <= 10; i++) setTimeout(() => table.scale.setScalar(i / 10), i * 40);
+  bb.anim.walkTo(-0.24 / bb.scale, 0.12 / bb.scale); bb.anim.walk.speed = 0.35;
+  guest.anim.walkTo(0.24 / guest.scale, 0.12 / guest.scale); guest.anim.walk.speed = 0.35;
+  anim.walkTo(-0.5, -0.28); anim.restYaw = 0.6; anim.strollNext = anim.t + 60;
+  await waitIdle([bb.anim, guest.anim]);
+  bb.anim.restYaw = Math.PI / 2; guest.anim.restYaw = -Math.PI / 2;
+  await sleep(900);
+  guest.anim.play("chirp"); say(`${C.emoji} ${C.intro}`); await sleep(2600);
+  bb.anim.play("chirp"); say(`${bb.name}: 안녕하세요! 저는 ${bb.name}예요 ☺️`); await sleep(2400);
+  bb.anim.play("flap"); say(`${bb.name}: 저는 날 수 있어요! 🪶`); await sleep(2700);
+  guest.anim.play("hop"); say(`${C.emoji} 우와~ 멋지다!`); await sleep(1800);
+  say("두근두근... 💓"); hearts(3); await sleep(2000);
+  const ok = window.__dateForce ?? (Math.random() < 0.6);
+  window.__dateForce = undefined;
+  if (ok) {
+    guest.anim.play("happy"); bb.anim.play("happy");
+    say(`${C.emoji} ${C.like}`); hearts(10); await sleep(2600);
+    // 결혼식
+    const veil = makeVeil(); veil.position.copy(bb.hat.position); bb.bones.head.add(veil);
+    const tie = makeBowtie(); tie.position.set(0, -0.09, 0.1); guest.bones.head.add(tie);
+    say("💒 결혼 축하해요! 🎉"); hearts(16); anim.play("happy");
+    bb.anim.play("hop"); guest.anim.play("hop"); await sleep(1400);
+    bb.anim.play("happy"); guest.anim.play("happy"); await sleep(1800);
+    bb.spouse = guest; guest.spouse = bb;
+    // 아기 소식 (엄마 알이 있으면 그 알이 깨어난 뒤에)
+    while (egg) await sleep(500);
+    say("둘 사이에 알이 생겼어요! 🥚💕");
+    popEgg(new THREE.Vector3(0, 0, 0.36), kind);
+    await sleep(4000);
+    table.parent?.remove(table);
+    bb.state = "home"; guest.state = "home"; bb.next = 2;
+    setTimeout(() => { veil.parent?.remove(veil); tie.parent?.remove(tie); }, 8000);
+  } else {
+    bb.anim.play("shake");
+    say(`${C.emoji} ${C.no}`); await sleep(2600);
+    say(`${bb.name}: 흑... 😢💧`); await sleep(1500);
+    guest.state = "leaving";
+    guest.anim.walkTo(1.2 / guest.scale, 0.2 / guest.scale); guest.anim.walk.speed = 0.4; guest.anim.restYaw = Math.PI / 2;
+    anim.walkTo(-0.42, 0.1); anim.restYaw = Math.PI / 2;
+    await sleep(1500);
+    say("엄마: 괜찮아, 더 좋은 짝이 있을 거야 🫂"); anim.play("happy");
+    await sleep(1500);
+    table.parent?.remove(table);
+    bb.state = "home"; bb.next = 2;
+  }
+  anim.strollNext = anim.t + 6;
+  date = null;
+}
+
+// ---- 유치원 / 독립 버튼 ----
+const KINDER_MS = 15000;   // 시안: 15초 뒤 돌아온다
+const kinderBtn = document.getElementById("kinderBtn"), freeBtn = document.getElementById("freeBtn");
+kinderBtn.addEventListener("click", () => {
+  const kids = babies.filter((b) => b.state === "home" && b.g < 1);
+  if (!kids.length) return;
+  kids.forEach((bb, i) => {
+    bb.hat.visible = true;
+    bb.state = "leaving";
+    bb.anim.walkTo((GATE.x - i * 0.1) / bb.scale, (GATE.z + i * 0.08) / bb.scale);
+    bb.anim.walk.speed = 0.7; bb.anim.walk.hop = false;
+    bb.anim.walk.wait = 1.2 + i * 0.4;   // 모자 쓰고 잠깐 뿌듯 → 출발
+    bb.anim.play("hop");
+  });
+  say(kids.length > 1 ? "다들 유치원 잘 다녀와~ 🎒" : "유치원 잘 다녀와~ 🎒");
+  anim.play("chirp");
+});
+freeBtn.addEventListener("click", () => {
+  const bb = babies.find((b) => b.state === "home" && b.g >= 1);
+  if (!bb) return;
+  say(bb.spouse ? `${bb.name}: 엄마, 우리 둘이 잘 살게요 💕` : `${bb.name}: 엄마 그동안 고마웠어요 💕`);
+  if (bb.spouse) {   // 짝꿍도 같이 떠난다
+    const sp = bb.spouse;
+    setTimeout(() => { sp.state = "leaving"; sp.anim.walkTo(1.2 / sp.scale, 0.2 / sp.scale); sp.anim.walk.speed = 0.45; sp.anim.walk.hop = true; }, 1800);
+  }
+  bb.anim.play("hop");
+  hearts(6);
+  setTimeout(() => {
+    if (bb.bird) { bb.state = "flying"; bb.fly = 0; }
+    else {   // 날개가 없으면 콩콩 뛰어서 멀리
+      bb.state = "leaving"; bb.forever = true;
+      bb.anim.walkTo(GATE.x / bb.scale, GATE.z / bb.scale);
+      bb.anim.walk.speed = 0.7; bb.anim.walk.hop = true;
+    }
+    bb.tag.style.display = "none";
+    anim.play("flap");
+    say("잘 가~ 행복하렴 🥹");
+  }, 1800);
+});
+function updateButtons() {
+  kinderBtn.style.display = babies.some((b) => b.state === "home" && b.g < 1) ? "" : "none";
+  freeBtn.style.display = babies.some((b) => b.state === "home" && b.g >= 1) && !date ? "" : "none";
+  dateBtn.style.display = singles().length && !date ? "" : "none";
+  if (dateBtn.style.display === "none") picker.classList.remove("show");
+}
+
+// ---- 움직임 (kkachi-rig.js 의 Animator) ----
+const clock = new THREE.Clock();
+function animate() {
+  const dt = Math.min(clock.getDelta(), 0.05);
+  anim?.update(dt);
+  updateFace(dt);
+  updateFood(dt);
+  updateEgg(dt);
+  [...babies].forEach((bb) => updateBaby(bb, dt));
+  [...guests].forEach((g) => updateGuest(g, dt));
+  separate();
+  updateButtons();
+  controls.update();
+  renderer.render(scene, camera);
+  requestAnimationFrame(animate);
+}
+animate();
+addEventListener("resize", () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>

@@ -3403,6 +3403,19 @@ async function showAllNotes() {
 
 $("#btn-settings").addEventListener("click", (e) => { e.stopPropagation(); settingsMenu(e.currentTarget); });
 
+// 까치 집: 페이지를 옮기면 녹음이 끊길 수 있어서 화면 위에 덮어 연다. 닫아도 앱을 끄기 전까진 그대로 둔다
+$("#btn-home").addEventListener("click", () => {
+  const box = $("#kkachi-home");
+  if (!box.querySelector("iframe")) {
+    const f = document.createElement("iframe");
+    f.src = "/home/";
+    f.title = "까치 집";
+    box.prepend(f);
+  }
+  box.hidden = false;
+});
+$("#kkachi-home-close").addEventListener("click", () => { $("#kkachi-home").hidden = true; });
+
 /* ---------- 상태 갱신 ---------- */
 
 async function refresh() {
