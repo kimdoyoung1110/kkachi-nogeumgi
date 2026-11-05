@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import contextlib
 import sys
+from pathlib import Path
 import threading
 from typing import Any, Optional
 
@@ -22,7 +23,9 @@ mcp = FastMCP("kkachi-video", instructions=(
     "광고 영상을 컷 단위로 분석하는 도구입니다. 영상 주소나 맥의 영상 파일 경로를 받으면 analyze_video 를 먼저 부르세요. "
     "결과의 이미지는 한 줄이 한 컷이고, 왼쪽에 컷 번호·시작 시각·길이, 오른쪽에 그 컷의 시작·중간·끝 화면이 있습니다. "
     "내레이션은 음악에 섞이면 틀릴 수 있으니 화면 글자와 비교해서 읽으세요. "
-    "컷 안에서 움직임이나 전환을 자세히 볼 때는 look_closer 를 쓰세요."
+    "컷 안에서 움직임이나 전환을 자세히 볼 때는 look_closer 를 쓰세요. "
+    "컷 사진이 들어간 PDF 는 export_pdf 로 만들고, 기존 PDF 에 붙일 때는 append_to 를 쓰세요. "
+    "주소 없이 예전 영상을 말하면 list_videos 로 찾으세요."
 ))
 
 _pipeline: Optional[Any] = None
@@ -73,6 +76,37 @@ def look_closer(video_id: str, start: float, end: float, frames: int = 6) -> lis
     for t, path in video.frames_between(video_id, start, end, frames):
         out += [f"{t:.2f}초", _jpeg(path)]
     return out
+
+
+@mcp.tool()
+def list_videos() -> str:
+    """지금까지 분석한 영상 목록(영상 번호, 제목, 길이, 컷 수). 예전 영상을 찾을 때 먼저 부른다."""
+    rows = [f"- {v['id']}: {v['title']} ({v['duration']:.0f}초, 컷 {v['shots']}개)"
+            for v in video.list_videos() if v["state"] == "done"]
+    return "\n".join(rows) or "아직 분석한 영상이 없어요."
+
+
+@mcp.tool()
+def export_pdf(video_id: str, shots: Optional[list[int]] = None, append_to: Optional[str] = None) -> str:
+    """컷별 스냅샷, 화면 글자, 내레이션을 담은 샷 리스트 PDF 를 맥의 다운로드 폴더에 만든다.
+    컷 사진이 들어간 PDF 를 원하면 직접 만들지 말고 이 도구를 쓰세요. 스냅샷 파일은 이 맥에만 있습니다.
+    shots: 넣을 컷 번호들. 없으면 전부.
+    append_to: 기존 PDF 의 전체 경로나 이름 일부. 주면 그 PDF 뒤에 컷을 붙인 새 파일을 만든다 (원본은 그대로).
+    이름은 다운로드·문서·데스크탑 폴더에서 찾는다."""
+    meta = video.pick_shots(video.load(video_id), shots)
+    folder = video.VIDEOS_DIR / video_id
+    downloads = Path.home() / "Downloads"
+    if not append_to:
+        out = video.free_path(downloads / video.pdf_name(meta))
+        video.make_pdf(meta, folder, out)
+        return f"다운로드 폴더에 저장했어요: {out}"
+    home = Path.home()
+    original = video.find_pdf(append_to, [downloads, home / "Documents", home / "Desktop"])
+    added = video.make_pdf(meta, folder, folder / "added.pdf")
+    out = video.free_path(original.with_name(f"{original.stem} (컷 추가).pdf"))
+    video.join_pdfs(original, added, out)
+    added.unlink(missing_ok=True)
+    return f"{original.name} 뒤에 컷 {len(meta['shots'])}개를 붙여 새 파일로 저장했어요. 원본은 그대로예요: {out}"
 
 
 if __name__ == "__main__":

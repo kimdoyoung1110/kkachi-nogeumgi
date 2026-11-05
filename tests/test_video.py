@@ -91,3 +91,57 @@ def test_connect_without_claude_app(tmp_path):
     assert video_connect.status("/bin/uv", tmp_path, path) == "no_claude"
     with pytest.raises(ValueError):
         video_connect.connect("/bin/uv", tmp_path, path)
+
+
+def test_pdf_has_all_shots_and_safe_name(tmp_path):
+    from PIL import Image
+    from pypdf import PdfReader
+
+    folder = _finished(tmp_path)
+    meta = video.read_json(folder / "shots.json")
+    for name in meta["shots"][0]["frames"]:
+        Image.new("RGB", (64, 36), "red").save(folder / name)
+    meta["shots"] = [{**meta["shots"][0], "index": i + 1} for i in range(14)]
+    meta["title"] = '가/나:다"'
+    out = video.make_pdf(meta, folder, tmp_path / "out.pdf")
+    assert len(PdfReader(out).pages) >= 2
+    assert video.pdf_name(meta) == "가 나 다 샷 리스트.pdf"
+
+
+def _pdf(path, pages):
+    from PIL import Image
+
+    images = [Image.new("RGB", (40, 40), "white") for _ in range(pages)]
+    images[0].save(path, "PDF", save_all=True, append_images=images[1:])
+    return path
+
+
+def test_join_keeps_original_and_adds_pages(tmp_path):
+    from pypdf import PdfReader
+
+    original = _pdf(tmp_path / "기획서.pdf", 2)
+    before = original.read_bytes()
+    out = video.join_pdfs(original, _pdf(tmp_path / "add.pdf", 3), tmp_path / "out.pdf")
+    assert len(PdfReader(out).pages) == 5 and original.read_bytes() == before
+
+
+def test_find_pdf_by_name_and_ambiguous_name(tmp_path):
+    one = _pdf(tmp_path / "광고 기획서.pdf", 1)
+    assert video.find_pdf("기획서", [tmp_path]) == one
+    _pdf(tmp_path / "기획서 초안.pdf", 1)
+    with pytest.raises(ValueError, match="여러 개"):
+        video.find_pdf("기획서", [tmp_path])
+    with pytest.raises(FileNotFoundError):
+        video.find_pdf("없는 파일", [tmp_path])
+
+
+def test_pick_shots_and_unknown_number(tmp_path):
+    meta = video.read_json(_finished(tmp_path) / "shots.json")
+    assert video.pick_shots(meta, [1])["shots"][0]["index"] == 1
+    with pytest.raises(ValueError, match="없는 컷"):
+        video.pick_shots(meta, [9])
+
+
+def test_free_path_never_overwrites(tmp_path):
+    first = _pdf(tmp_path / "a.pdf", 1)
+    assert video.free_path(first).name == "a 2.pdf"
