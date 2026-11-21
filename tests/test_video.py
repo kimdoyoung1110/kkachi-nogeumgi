@@ -206,3 +206,48 @@ def test_sheets_for_split_vertical_video(tmp_path):
             Image.new("RGB", (90, 160), "white").save(tmp_path / name)
     sheets = video.make_sheets(tmp_path, shots)
     assert len(sheets) == 1 and Image.open(sheets[0]).height > Image.open(sheets[0]).width
+
+
+def test_active_only_while_worker_alive(tmp_path):
+    video.set_status(tmp_path / "a", "running", "컷 나누는 중")            # 지금 이 프로세스가 분석 중
+    assert video.active(tmp_path / "a")["step"] == "컷 나누는 중"
+    video.set_status(tmp_path / "b", "running", "컷 나누는 중", pid=2 ** 22 + 9)
+    assert video.active(tmp_path / "b") is None                          # 분석하던 프로그램이 꺼짐
+    video.set_status(tmp_path / "c", "failed", error="x")
+    assert video.active(tmp_path / "c") is None
+
+
+def test_mcp_waits_briefly_then_reports_progress(tmp_path, monkeypatch):
+    import anyio
+
+    from app import video_mcp
+
+    monkeypatch.setattr(video, "VIDEOS_DIR", tmp_path)
+    monkeypatch.setattr(video_mcp, "WAIT_SECONDS", 0.2)
+    video.set_status(tmp_path / "vid1", "running", "내레이션 받아쓰는 중", progress=0.72)
+
+    class Ctx:
+        async def report_progress(self, *args):
+            pass
+
+    out = anyio.run(video_mcp._wait, "vid1", Ctx())
+    assert "아직 분석 중" in out[0] and "72%" in out[0] and "check_video" in out[0]
+
+
+def test_mcp_does_not_start_twice(tmp_path, monkeypatch):
+    from app import video_mcp
+
+    monkeypatch.setattr(video, "VIDEOS_DIR", tmp_path)
+    started = []
+    monkeypatch.setattr(video_mcp.subprocess, "Popen", lambda *a, **k: started.append(a) or (_ for _ in ()).throw(AssertionError))
+    vid = video.video_id("https://youtu.be/FaZm8LHy3Bo")
+    video.set_status(tmp_path / vid, "running", "컷 나누는 중")           # 이미 누가 분석 중
+    assert video_mcp._start("https://youtu.be/FaZm8LHy3Bo?si=x", "auto") == vid and not started
+    with pytest.raises(ValueError):
+        video_mcp._start("https://youtu.be/FaZm8LHy3Bo", "7")
+
+
+def test_split_cap_holds_with_many_cuts():
+    shots = video.make_shots([i * 6.0 for i in range(1, 110)], 2500.0)   # 41분, 컷 110개
+    out = video.split_shots(shots, "auto")
+    assert len(out) <= video.MAX_PIECES and len({s["cut"] for s in out}) == 110
