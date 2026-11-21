@@ -118,8 +118,9 @@ def split_shots(shots: list[dict[str, Any]], split: str = "auto") -> list[dict[s
 
     step = None if split == "cut" else AUTO_STEP if split == "auto" else float(split)
     out = pieces(step)
-    if step and len(out) > MAX_PIECES:   # 너무 많으면 간격을 넓힌다
-        out = pieces(step * len(out) / MAX_PIECES)
+    while step and len(out) > MAX_PIECES and len(out) > len(shots):   # 너무 많으면 간격을 넓힌다 (컷 수보다 적어지진 않는다)
+        step *= 1.25
+        out = pieces(step)
     for i, piece in enumerate(out, 1):
         piece["index"] = i
     return out
@@ -277,9 +278,18 @@ def analyze(source: str, pipeline: Any = None, progress: Optional[ProgressFn] = 
             shutil.rmtree(folder / name, ignore_errors=True)
 
     def say(step: str) -> None:
-        set_status(folder, "running", step, source=source)
+        set_status(folder, "running", step, source=source, split=split)
         if progress:
             progress(step)
+
+    last = [0.0]
+
+    def partly(step: str, start: float, span: float, done: int, total: int) -> None:
+        """긴 영상은 한 단계가 몇 분씩 걸려서, 단계 안에서도 진행률을 적는다 (1초에 한 번만)."""
+        if total and time.time() - last[0] > 1:
+            last[0] = time.time()
+            set_status(folder, "running", step, source=source, split=split,
+                       progress=round(start + span * min(done, total) / total, 3))
 
     try:
         say("영상 받는 중")
@@ -293,7 +303,8 @@ def analyze(source: str, pipeline: Any = None, progress: Optional[ProgressFn] = 
 
         say("컷별 화면과 글자 읽는 중")
         with ThreadPoolExecutor(max_workers=WORKERS) as pool:
-            list(pool.map(lambda shot: _read_shot(path, folder, shot), shots))
+            for i, _ in enumerate(pool.map(lambda shot: _read_shot(path, folder, shot), shots), 1):
+                partly("컷별 화면과 글자 읽는 중", 0.3, 0.35, i, len(shots))
 
         speech: list[dict[str, Any]] = []
         if pipeline is not None:
@@ -302,7 +313,13 @@ def analyze(source: str, pipeline: Any = None, progress: Optional[ProgressFn] = 
                 sound = audio_io.decode(path)
             except audio_io.AudioDecodeError:
                 sound = None   # 소리가 없는 영상 (음악·말 없는 릴스 등): 화면만 분석한다
-            for u in pipeline.process(sound) if sound is not None and len(sound) else []:
+            stages = {"diarize": (0.65, 0.03), "langid": (0.68, 0.04), "transcribe": (0.72, 0.18), "align": (0.9, 0.08)}
+
+            def heard(stage: str, done: int, total: int) -> None:
+                start, span = stages.get(stage, (0.65, 0.0))
+                partly("내레이션 받아쓰는 중", start, span, done, total)
+
+            for u in pipeline.process(sound, progress=heard) if sound is not None and len(sound) else []:
                 speech.append({"start": u.start, "end": u.end, "text": u.text,
                                "words": [{"text": w.text, "start": w.start, "end": w.end} for w in u.words]})
         for shot in shots:
@@ -356,6 +373,14 @@ def _stopped(status: dict[str, Any]) -> bool:
     except PermissionError:
         return False
     return False
+
+
+def active(folder: Path) -> Optional[dict[str, Any]]:
+    """지금 분석 중이면 그 상태 (분석하던 프로그램이 꺼졌으면 None)."""
+    status = read_json(folder / "status.json")
+    if status and status.get("state") in ("queued", "running") and not _stopped(status):
+        return status
+    return None
 
 
 def list_videos(root: Optional[Path] = None) -> list[dict[str, Any]]:
