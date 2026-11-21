@@ -137,6 +137,11 @@ class UtterancePatch(BaseModel):
 
 class VideoRequest(BaseModel):
     source: str
+    split: str = "auto"
+
+
+class VideoSplitRequest(BaseModel):
+    split: str
 
 
 class RetranscribeRequest(BaseModel):
@@ -433,14 +438,19 @@ def create_app(
         source = body.source.strip()
         if not re.match(r"https?://\S+$", source):
             raise HTTPException(400, "영상 주소를 넣어 주세요. https:// 로 시작해요.")
+        if body.split not in video.SPLITS:
+            raise HTTPException(400, "나누는 방식을 다시 골라 주세요.")
         vid = video.video_id(source)
         current = video.summary(videos_dir / vid)
-        if not current or current["state"] == "failed":
-            worker.enqueue_video(vid, source)
+        meta = video.read_json(videos_dir / vid / "shots.json")
+        if not current or current["state"] == "failed" or (meta and meta.get("split", "cut") != body.split):
+            worker.enqueue_video(vid, source, split=body.split)
         return {"id": vid}
 
     @app.post("/api/videos/upload", status_code=201)
-    def upload_video(file: UploadFile = File(...)) -> dict:
+    def upload_video(file: UploadFile = File(...), split: str = Form("auto")) -> dict:
+        if split not in video.SPLITS:
+            raise HTTPException(400, "나누는 방식을 다시 골라 주세요.")
         vid = secrets.token_hex(6)
         name = Path(file.filename or "영상.mp4")
         folder = videos_dir / vid
@@ -448,7 +458,7 @@ def create_app(
         target = folder / f"upload{name.suffix.lower()[:8]}"
         with open(target, "wb") as out:
             shutil.copyfileobj(file.file, out, 1024 * 1024)
-        worker.enqueue_video(vid, str(target), name.stem)
+        worker.enqueue_video(vid, str(target), name.stem, split)
         return {"id": vid}
 
     @app.get("/api/videos/claude")
@@ -471,6 +481,15 @@ def create_app(
         folder = video_folder(vid)
         meta = video.read_json(folder / "shots.json")
         return {**meta, "state": "done"} if meta else video.summary(folder) or {"id": vid, "state": "failed"}
+
+    @app.post("/api/videos/{vid}/split")
+    def resplit_video(vid: str, body: VideoSplitRequest) -> dict:
+        """같은 영상을 다른 간격으로 다시 나눈다 (영상은 다시 받지 않는다)."""
+        meta = video_meta(vid)
+        if body.split not in video.SPLITS:
+            raise HTTPException(400, "나누는 방식을 다시 골라 주세요.")
+        worker.enqueue_video(vid, meta["source"], meta["title"], body.split)
+        return {"id": vid}
 
     @app.delete("/api/videos/{vid}", status_code=204)
     def delete_video(vid: str) -> None:

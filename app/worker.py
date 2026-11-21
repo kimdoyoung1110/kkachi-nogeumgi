@@ -121,9 +121,9 @@ class Worker:
         )
         self._queue.put(("process", rec_id))
 
-    def enqueue_video(self, vid: str, source: str, title: Optional[str] = None) -> None:
+    def enqueue_video(self, vid: str, source: str, title: Optional[str] = None, split: str = "auto") -> None:
         video.set_status(self.recordings_dir.parent / "videos" / vid, "queued", source=source, title=title)
-        self._queue.put(("video", vid, source, title))
+        self._queue.put(("video", vid, source, title, split))
 
     def enqueue_retranscribe(self, utt_id: int, language: Optional[str]) -> None:
         self.db.update_utterance(utt_id, busy=1)
@@ -162,12 +162,12 @@ class Worker:
             finally:
                 self._queue.task_done()
 
-    def _video(self, vid: str, source: str, title: Optional[str]) -> None:
+    def _video(self, vid: str, source: str, title: Optional[str], split: str = "auto") -> None:
         root = self.recordings_dir.parent / "videos"
         if not (root / vid).exists():
             return   # 기다리는 사이 지웠다
         try:
-            video.analyze(source, pipeline=self.pipeline, root=root, vid=vid, title=title)
+            video.analyze(source, pipeline=self.pipeline, root=root, vid=vid, title=title, split=split)
         except Exception:
             log.exception("영상 분석 실패: %s", vid)   # 실패 내용은 status.json 에 남아 화면에 보인다
 

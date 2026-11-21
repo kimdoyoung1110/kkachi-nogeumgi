@@ -17,6 +17,7 @@ import hashlib
 import io
 import json
 import logging
+import os
 import re
 import shutil
 import subprocess
@@ -35,8 +36,8 @@ log = logging.getLogger(__name__)
 VIDEOS_DIR = config.DATA_DIR / "videos"
 SCENE_THRESHOLD = 0.2      # 낮을수록 컷을 많이 찾는다 (광고는 컷이 빠르고 비슷한 화면이 이어져 낮게)
 MIN_SHOT_SECONDS = 0.2     # 이보다 짧으면 번쩍임으로 보고 앞 컷에 붙인다
-SHOTS_PER_SHEET = 6
-THUMB = (360, 203)
+FRAME_SIZE = 960           # 꺼내는 화면의 긴 쪽 길이 (가로·세로 영상 모두 비율 그대로)
+STALE_SECONDS = 2 * 3600   # 어느 프로그램이 분석하는지 모르는 옛 기록은 이만큼 소식이 없으면 멈춘 걸로 본다
 WORKERS = 4
 MAX_TEXT_LINES = 8
 
@@ -51,8 +52,14 @@ def _ffmpeg(*args: str) -> subprocess.CompletedProcess:
 
 
 def video_id(source: str) -> str:
+    """같은 영상이면 주소 뒤에 붙은 공유 표시(?si=, ?igsh= 등)가 달라도 같은 번호."""
     m = re.search(r"(?:youtu\.be/|[?&]v=|/shorts/)([\w-]{11})", source)
-    return m.group(1) if m else hashlib.sha1(source.encode()).hexdigest()[:11]
+    if m:
+        return m.group(1)
+    m = re.search(r"instagram\.com/(?:[\w.]+/)?(?:p|reels?|tv)/([\w-]+)", source)
+    if m:
+        return f"ig_{m.group(1)}"[:32]
+    return hashlib.sha1(source.encode()).hexdigest()[:11]
 
 
 def fetch(source: str, folder: Path) -> tuple[Path, str]:
@@ -66,7 +73,8 @@ def fetch(source: str, folder: Path) -> tuple[Path, str]:
         return path, path.stem
     import yt_dlp
 
-    options = {"format": "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/b[height<=1080]/b", "merge_output_format": "mp4",
+    # 화질은 짧은 쪽 기준 1080 까지 (세로 릴스 720×1280 도 고화질로). 소리가 없는 영상도 받는다
+    options = {"format": "bv*+ba/bv*/b", "format_sort": ["res:1080", "vcodec:h264", "acodec:aac", "ext:mp4:m4a"], "merge_output_format": "mp4",
                "outtmpl": str(folder / "video.%(ext)s"), "noplaylist": True, "quiet": True, "no_warnings": True,
                "noprogress": True, "ffmpeg_location": imageio_ffmpeg.get_ffmpeg_exe()}
     try:
@@ -85,6 +93,44 @@ def detect_cuts(path: Path, threshold: float = SCENE_THRESHOLD) -> list[float]:
     return [float(t) for t in re.findall(r"pts_time:([\d.]+)", out)]
 
 
+SPLITS = {"auto": "자동 (컷 + 3초 넘는 장면은 1초씩)", "cut": "컷마다", "0.5": "0.5초마다", "1": "1초마다", "2": "2초마다"}
+LONG_SHOT = 3.0    # 자동: 이보다 긴 장면(카메라가 끊김 없이 움직이는 릴스 등)은
+AUTO_STEP = 1.0    #       이 간격으로 더 쪼갠다
+MAX_PIECES = 400   # 긴 영상을 잘게 자를 때 구간이 너무 많아지지 않게
+
+
+def split_shots(shots: list[dict[str, Any]], split: str = "auto") -> list[dict[str, Any]]:
+    """컷을 시간 간격으로 더 나눈다. 구간마다 원래 컷 번호(cut)와 그 안의 순서(part/parts)를 남긴다."""
+    if split not in SPLITS:
+        raise ValueError(f"나누는 방식은 {', '.join(SPLITS)} 중 하나예요.")
+
+    def pieces(step: Optional[float]) -> list[dict[str, Any]]:
+        out = []
+        for cut, s in enumerate(shots, 1):
+            length = s["end"] - s["start"]
+            use = step if split != "auto" or length > LONG_SHOT else None
+            n = max(1, round(length / use)) if use else 1
+            for k in range(n):
+                a, b = s["start"] + length * k / n, s["start"] + length * (k + 1) / n
+                out.append({"start": round(a, 3), "end": round(b, 3), "length": round(b - a, 3),
+                            "cut": cut, "part": k + 1, "parts": n})
+        return out
+
+    step = None if split == "cut" else AUTO_STEP if split == "auto" else float(split)
+    out = pieces(step)
+    if step and len(out) > MAX_PIECES:   # 너무 많으면 간격을 넓힌다
+        out = pieces(step * len(out) / MAX_PIECES)
+    for i, piece in enumerate(out, 1):
+        piece["index"] = i
+    return out
+
+
+def label(shot: dict[str, Any]) -> str:
+    """원래 컷 번호. 쪼갠 구간이면 '3-2' (3번 컷의 둘째 구간)."""
+    cut = shot.get("cut", shot["index"])
+    return f"{cut}-{shot['part']}" if shot.get("parts", 1) > 1 else str(cut)
+
+
 def make_shots(cuts: list[float], duration: float, min_seconds: float = MIN_SHOT_SECONDS) -> list[dict[str, float]]:
     edges = [0.0]
     for t in sorted(cuts):
@@ -95,11 +141,12 @@ def make_shots(cuts: list[float], duration: float, min_seconds: float = MIN_SHOT
             for i, (a, b) in enumerate(zip(edges, edges[1:]))]
 
 
-def grab(path: Path, t: float, out: Path, width: int = 960) -> Path:
+def grab(path: Path, t: float, out: Path, size: int = FRAME_SIZE) -> Path:
     out.parent.mkdir(parents=True, exist_ok=True)
     for back in (0.0, 0.2, 0.5, 1.0):   # 소리가 화면보다 길면 맨 끝에는 화면이 없어서 조금씩 앞으로 간다
         _ffmpeg("-y", "-ss", f"{max(0.0, t - back):.3f}", "-i", str(path), "-frames:v", "1",
-                "-vf", f"scale={width}:-2", "-q:v", "3", str(out))
+                "-vf", f"scale={size}:{size}:force_original_aspect_ratio=decrease:force_divisible_by=2",
+                "-q:v", "3", str(out))
         if out.exists():
             return out
     raise ValueError(f"{t:.2f}초 화면을 꺼내지 못했어요.")
@@ -129,25 +176,48 @@ def speech_in(speech: list[dict[str, Any]], start: float, end: float) -> str:
     return " ".join(words)
 
 
+def fit(image: Any, box: tuple[int, int]) -> Any:
+    """비율을 지켜 box 안에 넣고 남는 곳은 검게 (세로 영상이 찌그러지거나 잘리지 않게)."""
+    from PIL import Image
+
+    scale = min(box[0] / image.width, box[1] / image.height)
+    image = image.convert("RGB").resize((max(1, round(image.width * scale)), max(1, round(image.height * scale))))
+    canvas = Image.new("RGB", box, "black")
+    canvas.paste(image, ((box[0] - image.width) // 2, (box[1] - image.height) // 2))
+    return canvas
+
+
+def frame_aspect(folder: Path, shots: list[dict[str, Any]]) -> float:
+    """가로 ÷ 세로. 세로 영상(릴스·쇼츠)이면 1보다 작다."""
+    from PIL import Image
+
+    with Image.open(folder / shots[0]["frames"][0]) as im:
+        return im.width / im.height
+
+
 def make_sheets(folder: Path, shots: list[dict[str, Any]]) -> list[Path]:
     from PIL import Image, ImageDraw, ImageFont
 
     font = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial.ttf", 22)
-    w, h = THUMB
-    label = 110
+    tall = frame_aspect(folder, shots) < 1
+    w, h = (203, 360) if tall else (360, 203)
+    per_sheet = 4 if tall else 6   # 한 장이 너무 길어지지 않게
+    label_w = 110
     paths = []
-    for page, first in enumerate(range(0, len(shots), SHOTS_PER_SHEET)):
-        group = shots[first:first + SHOTS_PER_SHEET]
-        sheet = Image.new("RGB", (label + w * 3 + 8, (h + 6) * len(group)), "#111111")
+    for page, first in enumerate(range(0, len(shots), per_sheet)):
+        group = shots[first:first + per_sheet]
+        sheet = Image.new("RGB", (label_w + w * 3 + 8, (h + 6) * len(group)), "#111111")
         draw = ImageDraw.Draw(sheet)
         for row, shot in enumerate(group):
             y = row * (h + 6)
             draw.text((8, y + 8), f"#{shot['index']}", fill="white", font=font)
+            if shot.get("parts", 1) > 1:
+                draw.text((8, y + 94), f"cut {label(shot)}", fill="#888888", font=font)
             draw.text((8, y + 38), f"{shot['start']:.1f}s", fill="#bbbbbb", font=font)
             draw.text((8, y + 66), f"{shot['length']:.1f}s", fill="#888888", font=font)
             for col, name in enumerate(shot["frames"]):
                 with Image.open(folder / name) as im:
-                    sheet.paste(im.convert("RGB").resize(THUMB), (label + col * (w + 4), y))
+                    sheet.paste(fit(im, (w, h)), (label_w + col * (w + 4), y))
         path = folder / "sheets" / f"sheet{page + 1:02d}.jpg"
         path.parent.mkdir(exist_ok=True)
         sheet.save(path, quality=62)
@@ -175,7 +245,7 @@ def set_status(folder: Path, state: str, step: str = "", error: Optional[str] = 
     folder.mkdir(parents=True, exist_ok=True)
     old = read_json(folder / "status.json") or {}
     status = {**old, "state": state, "step": step, "progress": STEPS.get(step, 0.0), "error": error,
-              "updated_at": time.time(), **extra}
+              "updated_at": time.time(), "pid": os.getpid(), **extra}
     tmp = folder / "status.json.tmp"
     tmp.write_text(json.dumps(status, ensure_ascii=False), encoding="utf-8")
     tmp.replace(folder / "status.json")
@@ -189,14 +259,22 @@ def read_json(path: Path) -> Optional[dict[str, Any]]:
 
 
 def analyze(source: str, pipeline: Any = None, progress: Optional[ProgressFn] = None, root: Optional[Path] = None,
-            vid: Optional[str] = None, title: Optional[str] = None) -> dict[str, Any]:
-    """영상 하나를 분석한다. 이미 분석한 영상이면 저장해 둔 결과를 돌려준다."""
+            vid: Optional[str] = None, title: Optional[str] = None, split: str = "auto") -> dict[str, Any]:
+    """영상 하나를 분석한다. 같은 방식으로 이미 분석한 영상이면 저장해 둔 결과를 돌려준다.
+    split: 'auto'(컷 + 긴 장면은 1초씩) / 'cut'(컷마다) / '0.5'·'1'·'2'(그 초마다)."""
+    if split not in SPLITS:
+        raise ValueError(f"나누는 방식은 {', '.join(SPLITS)} 중 하나예요.")
     vid = vid or video_id(source)
     folder = _root(root) / vid
     meta_path = folder / "shots.json"
     done = read_json(meta_path)
-    if done:
+    if done and done.get("split", "cut") == split:   # 예전 결과는 컷마다 나눈 것
         return done
+    if done:   # 다른 방식으로 다시 나눈다. 받아 둔 영상은 그대로 쓴다
+        title = title or done["title"]
+        meta_path.unlink()
+        for name in ("frames", "sheets", "zoom"):
+            shutil.rmtree(folder / name, ignore_errors=True)
 
     def say(step: str) -> None:
         set_status(folder, "running", step, source=source)
@@ -211,7 +289,7 @@ def analyze(source: str, pipeline: Any = None, progress: Optional[ProgressFn] = 
             raise ValueError("영상 길이를 읽지 못했어요. 영상 파일이 맞는지 확인해 주세요.")
 
         say("컷 나누는 중")
-        shots = make_shots(detect_cuts(path), duration)
+        shots = split_shots(make_shots(detect_cuts(path), duration), split)
 
         say("컷별 화면과 글자 읽는 중")
         with ThreadPoolExecutor(max_workers=WORKERS) as pool:
@@ -220,7 +298,11 @@ def analyze(source: str, pipeline: Any = None, progress: Optional[ProgressFn] = 
         speech: list[dict[str, Any]] = []
         if pipeline is not None:
             say("내레이션 받아쓰는 중")
-            for u in pipeline.process(audio_io.decode(path)):
+            try:
+                sound = audio_io.decode(path)
+            except audio_io.AudioDecodeError:
+                sound = None   # 소리가 없는 영상 (음악·말 없는 릴스 등): 화면만 분석한다
+            for u in pipeline.process(sound) if sound is not None and len(sound) else []:
                 speech.append({"start": u.start, "end": u.end, "text": u.text,
                                "words": [{"text": w.text, "start": w.start, "end": w.end} for w in u.words]})
         for shot in shots:
@@ -232,7 +314,7 @@ def analyze(source: str, pipeline: Any = None, progress: Optional[ProgressFn] = 
                    else "영상을 분석하지 못했어요. 다시 시도해 주세요.")
         raise
     meta = {"id": vid, "title": title or found_title, "source": source, "path": str(path), "duration": duration,
-            "created_at": time.time(), "shots": shots,
+            "aspect": round(frame_aspect(folder, shots), 4), "split": split, "created_at": time.time(), "shots": shots,
             "speech": [{k: u[k] for k in ("start", "end", "text")} for u in speech]}
     tmp = folder / "shots.json.tmp"
     tmp.write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
@@ -254,10 +336,26 @@ def summary(folder: Path) -> Optional[dict[str, Any]]:
                 "duration": meta["duration"], "shots": len(shots), "created_at": meta.get("created_at", 0),
                 "thumb": shots[0]["frames"][1] if shots else None}
     status = read_json(folder / "status.json")
+    if status and status.get("state") in ("queued", "running") and _stopped(status):
+        status = {**status, "state": "failed", "error": "분석하던 프로그램이 꺼져서 멈췄어요. 지우고 다시 넣어 주세요."}
     if status:
         return {"id": folder.name, "created_at": status.get("updated_at", 0), "thumb": None, "shots": 0, "duration": None,
                 **status, "title": status.get("title") or status.get("source")}
     return None
+
+
+def _stopped(status: dict[str, Any]) -> bool:
+    """분석하던 프로그램(앱 또는 Claude 앱의 도구)이 꺼졌는지."""
+    pid = status.get("pid")
+    if not pid:
+        return time.time() - status.get("updated_at", 0) > STALE_SECONDS
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        return False
+    return False
 
 
 def list_videos(root: Optional[Path] = None) -> list[dict[str, Any]]:
@@ -282,9 +380,9 @@ def delete(vid: str, root: Optional[Path] = None) -> None:
 def to_csv(meta: dict[str, Any]) -> str:
     out = io.StringIO()
     writer = csv.writer(out)
-    writer.writerow(["컷", "시작(초)", "끝(초)", "길이(초)", "화면 글자", "내레이션"])
+    writer.writerow(["번호", "컷", "시작(초)", "끝(초)", "길이(초)", "화면 글자", "내레이션"])
     for s in meta["shots"]:
-        writer.writerow([s["index"], s["start"], s["end"], s["length"], " / ".join(s["text"]), s["speech"]])
+        writer.writerow([s["index"], label(s), s["start"], s["end"], s["length"], " / ".join(s["text"]), s["speech"]])
     return "\ufeff" + out.getvalue()   # 엑셀에서 한글이 안 깨지게
 
 
@@ -307,7 +405,8 @@ def make_pdf(meta: dict[str, Any], folder: Path, out: Path) -> Path:
     page_w, page_h, margin = 1240, 1754, 60     # A4, 150dpi
     fonts = "/System/Library/Fonts/AppleSDGothicNeo.ttc"
     title_font, head_font, body_font = (ImageFont.truetype(fonts, size) for size in (34, 24, 21))
-    thumb_w, thumb_h, gap = 366, 206, 8
+    tall = meta.get("aspect", 16 / 9) < 1
+    thumb_w, thumb_h, gap = (206, 366, 8) if tall else (366, 206, 8)
     pages: list[Any] = []
 
     def new_page() -> Any:
@@ -334,12 +433,13 @@ def make_pdf(meta: dict[str, Any], folder: Path, out: Path) -> Path:
         if y + height > page_h - margin:
             draw = new_page()
             y = margin
-        draw.text((margin, y), f"컷 {shot['index']}", fill="#1d1d1f", font=head_font)
+        draw.text((margin, y), f"{shot['index']} · 컷 {label(shot)}" if shot.get("parts", 1) > 1 else f"컷 {shot['index']}",
+                  fill="#1d1d1f", font=head_font)
         draw.text((margin + 110, y + 3), f"{shot['start']:.2f}초부터 · {shot['length']:.2f}초", fill="#5f5e5a", font=body_font)
         y += 38
         for col, name in enumerate(shot["frames"]):
             with Image.open(folder / name) as im:
-                thumb = im.convert("RGB").resize((thumb_w, thumb_h))
+                thumb = fit(im, (thumb_w, thumb_h))
             pages[-1].paste(thumb, (margin + col * (thumb_w + gap), y))
         y += thumb_h + 8
         for line in notes:
@@ -358,7 +458,7 @@ def pick_shots(meta: dict[str, Any], numbers: Optional[list[int]]) -> dict[str, 
     known = {s["index"] for s in meta["shots"]}
     missing = sorted(set(numbers) - known)
     if missing:
-        raise ValueError(f"없는 컷 번호예요: {missing}. 이 영상은 컷 1~{len(known)}까지 있어요.")
+        raise ValueError(f"없는 번호예요: {missing}. 이 영상은 1~{len(known)}번까지 있어요.")
     return {**meta, "shots": [s for s in meta["shots"] if s["index"] in set(numbers)]}
 
 
@@ -420,14 +520,16 @@ def frames_between(vid: str, start: float, end: float, count: int) -> list[tuple
     folder = VIDEOS_DIR / vid / "zoom"
     count = max(1, min(count, 12))
     times = [start + (end - start) * (i + 0.5) / count for i in range(count)]
-    return [(t, grab(Path(meta["path"]), t, folder / f"t{t:08.3f}.jpg", width=720)) for t in times]
+    return [(t, grab(Path(meta["path"]), t, folder / f"t{t:08.3f}.jpg", size=720)) for t in times]
 
 
 def shot_table(meta: dict[str, Any]) -> str:
-    rows = [f"# {meta['title']}", f"영상 번호 {meta['id']} · 길이 {meta['duration']:.1f}초 · 컷 {len(meta['shots'])}개", "",
-            "| 컷 | 시작 | 길이 | 화면 글자 | 내레이션 |", "|---|---|---|---|---|"]
+    cuts = len({s.get("cut", s["index"]) for s in meta["shots"]})
+    how = SPLITS.get(meta.get("split", "cut"), "")
+    rows = [f"# {meta['title']}", f"영상 번호 {meta['id']} · 길이 {meta['duration']:.1f}초 · 컷 {cuts}개 · 구간 {len(meta['shots'])}개 ({how})",
+            "", "| 번호 | 컷 | 시작 | 길이 | 화면 글자 | 내레이션 |", "|---|---|---|---|---|---|"]
     for s in meta["shots"]:
         lines = s["text"][:MAX_TEXT_LINES]   # 책 한 면처럼 글자가 가득한 화면은 앞부분만
         text = " / ".join(lines).replace("|", "\\|") + (" …" if len(s["text"]) > len(lines) else "")
-        rows.append(f"| {s['index']} | {s['start']:.2f}s | {s['length']:.2f}s | {text} | {s['speech']} |")
+        rows.append(f"| {s['index']} | {label(s)} | {s['start']:.2f}s | {s['length']:.2f}s | {text} | {s['speech']} |")
     return "\n".join(rows)

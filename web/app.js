@@ -186,7 +186,8 @@ async function renderVideos() {
       <h2>광고 영상 분석하기</h2>
       <p class="muted">영상 주소를 넣거나 파일을 고르면 컷, 화면, 글자, 내레이션을 표로 정리해요.</p>
       <div class="video-add-row">
-        <input class="input" id="video-url" type="url" placeholder="https://youtu.be/..." aria-label="영상 주소" autocomplete="off">
+        <input class="input" id="video-url" type="url" placeholder="https://youtu.be/... 또는 인스타 릴스 주소" aria-label="영상 주소" autocomplete="off">
+        <select class="select" id="video-split" aria-label="나누는 방식">${splitOptions("auto")}</select>
         <button class="btn btn-primary" type="submit">분석하기</button>
         <button class="btn btn-ghost" type="button" id="video-pick">파일 고르기</button>
         <input type="file" id="video-file" accept="video/*" hidden>
@@ -199,7 +200,7 @@ async function renderVideos() {
     const source = $("#video-url").value.trim();
     if (!source) return;
     try {
-      await api("/api/videos", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ source }) });
+      await api("/api/videos", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ source, split: $("#video-split").value }) });
       $("#video-url").value = "";
       refreshVideos();
     } catch (err) { toast(err.message, "error"); }
@@ -211,6 +212,7 @@ async function renderVideos() {
     toast("영상을 올리는 중…");
     const form = new FormData();
     form.append("file", file);
+    form.append("split", $("#video-split").value);
     try { await api("/api/videos/upload", { method: "POST", body: form }); refreshVideos(); }
     catch (err) { toast(err.message, "error"); }
     e.target.value = "";
@@ -269,6 +271,9 @@ async function refreshVideos() {
 }
 
 const FRAME_NAMES = ["시작", "중간", "끝"];
+const SPLITS = { auto: "자동 (컷 + 긴 장면은 1초씩)", cut: "컷마다", "0.5": "0.5초마다", 1: "1초마다", 2: "2초마다" };
+const splitOptions = (current) => Object.entries(SPLITS)
+  .map(([k, v]) => `<option value="${k}"${k === current ? " selected" : ""}>${v}</option>`).join("");
 
 // 컷 사진 크게 보기: 그 컷의 시작·중간·끝을 좌우로 넘긴다
 function openFrames(id, shot, start) {
@@ -310,18 +315,19 @@ async function renderVideo(id) {
   view.innerHTML = `
     <a class="back-link" href="#/videos">← 영상 목록</a>
     <div class="video-head">
-      <div><h1>${esc(meta.title)}</h1><p class="muted">${meta.duration.toFixed(1)}초 · 컷 ${meta.shots.length}개</p></div>
+      <div><h1>${esc(meta.title)}</h1><p class="muted">${meta.duration.toFixed(1)}초 · 컷 ${new Set(meta.shots.map((s) => s.cut ?? s.index)).size}개 · 구간 ${meta.shots.length}개</p></div>
       <div class="video-head-actions">
+        <select class="select" id="video-resplit" aria-label="다시 나누기" title="다른 간격으로 다시 나누기">${splitOptions(meta.split || "cut")}</select>
         <a class="btn btn-ghost" href="/api/videos/${id}/shots.pdf" download>PDF 내보내기</a>
         <a class="btn btn-ghost" href="/api/videos/${id}/shots.csv" download>CSV 내보내기</a>
         <button class="btn btn-ghost" id="video-delete">지우기</button>
       </div>
     </div>
     <video id="video-player" class="video-player" controls preload="metadata" src="/api/videos/${id}/play"></video>
-    <div class="video-table-wrap"><table class="video-table">
+    <div class="video-table-wrap"><table class="video-table${meta.aspect < 1 ? " tall" : ""}">
       <thead><tr><th>컷</th><th>화면</th><th>내용</th></tr></thead>
       <tbody>${meta.shots.map((s, i) => `<tr data-start="${s.start}" data-end="${s.end}" tabindex="0">
-        <td class="video-shot"><b>${s.index}</b><small>${clock(s.start)}</small><small>${s.length.toFixed(1)}초</small></td>
+        <td class="video-shot"><b>${s.index}</b>${s.parts > 1 ? `<small class="video-cut">컷 ${s.cut} · ${s.part}/${s.parts}</small>` : ""}<small>${clock(s.start)}</small><small>${s.length.toFixed(1)}초</small></td>
         <td class="video-frames">${s.frames.map((f, n) => `<button class="video-frame" data-shot="${i}" data-frame="${n}" aria-label="컷 ${s.index} ${FRAME_NAMES[n]} 화면 크게 보기"><img src="${videoFrame(id, f)}" alt="" loading="lazy"></button>`).join("")}</td>
         <td class="video-notes">${s.text.length ? `<p><small>화면 글자</small>${esc(s.text.slice(0, 8).join(" / "))}${s.text.length > 8 ? " …" : ""}</p>` : ""}
           ${s.speech ? `<p><small>내레이션</small>${esc(s.speech)}</p>` : ""}</td></tr>`).join("")}</tbody>
@@ -339,6 +345,13 @@ async function renderVideo(id) {
   });
   player.addEventListener("timeupdate", () => {
     rows.forEach((row) => row.classList.toggle("on", player.currentTime >= +row.dataset.start && player.currentTime < +row.dataset.end));
+  });
+  $("#video-resplit").addEventListener("change", async (e) => {
+    try {
+      await api(`/api/videos/${id}/split`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ split: e.target.value }) });
+      toast("다시 나누는 중이에요. 끝나면 목록에서 열어 주세요.");
+      location.hash = "#/videos";
+    } catch (err) { toast(err.message, "error"); }
   });
   $("#video-delete").addEventListener("click", async () => {
     if (!await confirmDialog("이 영상과 분석 결과를 지울까요?")) return;
