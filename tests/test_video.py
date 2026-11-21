@@ -59,7 +59,7 @@ def test_failed_analysis_leaves_friendly_status(tmp_path):
 def test_csv_opens_in_excel_with_korean(tmp_path):
     folder = _finished(tmp_path)
     text = video.to_csv(video.read_json(folder / "shots.json"))
-    assert text.startswith("﻿컷,") and "멋" in text
+    assert text.startswith("\ufeff번호,컷,") and "멋" in text
 
 
 def test_load_rejects_path_tricks(tmp_path):
@@ -138,10 +138,71 @@ def test_find_pdf_by_name_and_ambiguous_name(tmp_path):
 def test_pick_shots_and_unknown_number(tmp_path):
     meta = video.read_json(_finished(tmp_path) / "shots.json")
     assert video.pick_shots(meta, [1])["shots"][0]["index"] == 1
-    with pytest.raises(ValueError, match="없는 컷"):
+    with pytest.raises(ValueError, match="없는 번호"):
         video.pick_shots(meta, [9])
 
 
 def test_free_path_never_overwrites(tmp_path):
     first = _pdf(tmp_path / "a.pdf", 1)
     assert video.free_path(first).name == "a 2.pdf"
+
+
+def test_instagram_links_share_one_id():
+    a = video.video_id("https://www.instagram.com/reel/CDUMkliABpa/?igsh=abc")
+    assert a == video.video_id("https://www.instagram.com/reels/CDUMkliABpa/") == "ig_CDUMkliABpa"
+    assert video.video_id("https://www.instagram.com/someone/reel/CDUMkliABpa/") == "ig_CDUMkliABpa"
+
+
+def test_fit_keeps_vertical_frame_whole():
+    from PIL import Image
+
+    tall = Image.new("RGB", (90, 160), "white")
+    out = video.fit(tall, (360, 203))
+    assert out.size == (360, 203)
+    box = out.convert("L").getbbox()          # 흰 부분 = 원래 화면
+    assert box[3] - box[1] == 203 and abs((box[2] - box[0]) / 203 - 90 / 160) < 0.02
+
+
+def test_stopped_analysis_shows_as_failed(tmp_path):
+    video.set_status(tmp_path / "alive", "running", "컷 나누는 중")   # 지금 이 프로세스
+    video.set_status(tmp_path / "dead", "running", "컷 나누는 중", pid=2 ** 22 + 7)
+    (tmp_path / "old").mkdir()
+    (tmp_path / "old" / "status.json").write_text(json.dumps({"state": "running", "updated_at": 1}), encoding="utf-8")
+    states = {i["id"]: i["state"] for i in video.list_videos(tmp_path)}
+    assert states == {"alive": "running", "dead": "failed", "old": "failed"}
+
+
+def test_auto_split_cuts_long_scene_into_seconds_only():
+    shots = video.make_shots([2.0], 21.0)           # 2초짜리 컷 + 19초짜리 긴 장면
+    out = video.split_shots(shots, "auto")
+    assert len(out) == 1 + 19
+    assert out[0]["parts"] == 1 and video.label(out[0]) == "1"
+    assert out[1]["cut"] == 2 and video.label(out[1]) == "2-1" and out[-1]["end"] == 21.0
+    assert [s["index"] for s in out] == list(range(1, 21))
+
+
+def test_fixed_and_cut_splits():
+    shots = video.make_shots([], 4.0)
+    assert len(video.split_shots(shots, "1")) == 4
+    assert len(video.split_shots(shots, "0.5")) == 8
+    assert len(video.split_shots(shots, "cut")) == 1
+    with pytest.raises(ValueError):
+        video.split_shots(shots, "7")
+
+
+def test_split_never_explodes_on_long_video():
+    out = video.split_shots(video.make_shots([], 600.0), "0.5")
+    assert len(out) <= video.MAX_PIECES and out[-1]["end"] == 600.0
+
+
+def test_sheets_for_split_vertical_video(tmp_path):
+    from PIL import Image
+
+    shots = video.split_shots(video.make_shots([], 3.5), "1")
+    for s in shots:
+        s["frames"] = [f"frames/s{s['index']}_{k}.jpg" for k in "abc"]
+        for name in s["frames"]:
+            (tmp_path / "frames").mkdir(exist_ok=True)
+            Image.new("RGB", (90, 160), "white").save(tmp_path / name)
+    sheets = video.make_sheets(tmp_path, shots)
+    assert len(sheets) == 1 and Image.open(sheets[0]).height > Image.open(sheets[0]).width
